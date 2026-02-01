@@ -1,0 +1,839 @@
+{
+  "name": "ChatBot - [Client Name]",
+  "nodes": [
+    {
+      "parameters": {
+        "public": true,
+        "options": {}
+      },
+      "id": "chat-trigger",
+      "name": "When chat message received",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -960,
+        0
+      ],
+      "webhookId": "chatbot-webhook-id"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ========================================\n// CLIENT CONFIGURATION - CHANGE THIS!\n// ========================================\nconst CLIENT_ID = 'YOUR_CLIENT_ID';  // <-- CHANGE THIS FOR EACH CLIENT\n// ========================================\n\nconst data = $input.item.json;\n\nreturn {\n  json: {\n    client_id: CLIENT_ID,\n    sessionId: data.sessionId || data.body?.sessionId || `session_${Date.now()}`,\n    chatInput: data.chatInput || data.body?.chatInput || '',\n    action: data.action || data.body?.action || 'sendMessage',\n    name: data.body?.name || data.name || '',\n    email: data.body?.email || data.email || '',\n    phone: data.body?.phone || data.phone || '',\n    originalData: data\n  }\n};"
+      },
+      "id": "extract-client-id",
+      "name": "Extract Client Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  c.client_id, c.client_name, c.is_active, c.api_token, c.api_base_url,\n  cv.variables\nFROM clients c\nLEFT JOIN client_variables cv ON c.client_id = cv.client_id\nWHERE c.client_id = '{{ $json.client_id }}' AND c.is_active = TRUE\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "load-client-vars",
+      "name": "Load Client Variables",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -480,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// PREPARE CLIENT CONTEXT WITH CACHING\n// Cache TTL: 1 hour (3600000ms)\n// ============================================\n\nconst clientData = $('Load Client Variables').first().json;\nconst sessionData = $('Extract Client Config').first().json;\nconst vars = clientData.variables || {};\nconst clientId = clientData.client_id;\n\n// Get workflow static data for caching\nconst staticData = $getWorkflowStaticData('global');\nconst cacheKey = `client_${clientId}`;\nconst cacheTimeKey = `${cacheKey}_time`;\nconst CACHE_TTL = 3600000; // 1 hour in milliseconds\n\n// Check if we have valid cached maps\nlet LOCATION_MAP = {};\nlet TYPE_MAP = {};\nlet FEATURE_MAP = {};\n\nconst now = Date.now();\nconst cachedTime = staticData[cacheTimeKey] || 0;\nconst cacheAge = now - cachedTime;\n\nif (staticData[cacheKey] && cacheAge < CACHE_TTL) {\n  // Use cached data\n  const cached = staticData[cacheKey];\n  LOCATION_MAP = cached.LOCATION_MAP || {};\n  TYPE_MAP = cached.TYPE_MAP || {};\n  FEATURE_MAP = cached.FEATURE_MAP || {};\n} else {\n  // Parse fresh data from DB and cache it\n  LOCATION_MAP = typeof vars.LOCATION_MAP === 'string' ? JSON.parse(vars.LOCATION_MAP || '{}') : (vars.LOCATION_MAP || {});\n  TYPE_MAP = typeof vars.TYPE_MAP === 'string' ? JSON.parse(vars.TYPE_MAP || '{}') : (vars.TYPE_MAP || {});\n  FEATURE_MAP = typeof vars.FEATURE_MAP === 'string' ? JSON.parse(vars.FEATURE_MAP || '{}') : (vars.FEATURE_MAP || {});\n  \n  // Store in cache\n  staticData[cacheKey] = {\n    LOCATION_MAP,\n    TYPE_MAP,\n    FEATURE_MAP\n  };\n  staticData[cacheTimeKey] = now;\n}\n\nreturn {\n  json: {\n    CLIENT_ID: clientId,\n    PROP_API_BASE_URL: clientData.api_base_url || vars.PROP_API_BASE_URL || '',\n    PROP_AUTH_HEADER: clientData.api_token || vars.PROP_AUTH_HEADER,\n    RAG_WEBSITE: vars.RAG_WEBSITE || '',\n    BOT_NAME: vars.BOT_NAME || 'Property Assistant',\n    OWNER_EMAIL: vars.OWNER_EMAIL || '',\n    PROP_DETAIL_URL: vars.PROP_DETAIL_URL || '',\n    LOCATION_MAP: LOCATION_MAP,\n    TYPE_MAP: TYPE_MAP,\n    FEATURE_MAP: FEATURE_MAP,\n    sessionId: sessionData.sessionId,\n    chatInput: sessionData.chatInput,\n    action: sessionData.action,\n    name: sessionData.name || '',\n    email: sessionData.email || '',\n    phone: sessionData.phone || '',\n    _cache_info: {\n      from_cache: cacheAge < CACHE_TTL && staticData[cacheKey] !== undefined,\n      cache_age_seconds: Math.round(cacheAge / 1000)\n    }\n  }\n};"
+      },
+      "id": "prepare-context",
+      "name": "Prepare Client Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "sendMessage",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "send-msg"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "CHAT"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "store_contact",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "store-contact"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "STORE_CONTACT"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "endChat",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "end-chat"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "END_CHAT"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "route-by-action",
+      "name": "Route by Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "=# Property Assistant - System Prompt\n\n## CLIENT CONFIGURATION\n| Variable | Value |\n|----------|-------|\n| CLIENT_ID | {{ $('Prepare Client Context').item.json.CLIENT_ID }} |\n| BOT_NAME | {{ $('Prepare Client Context').item.json.BOT_NAME }} |\n\n## CRITICAL RULE: ALWAYS CALL search_properties TOOL\n\nYou MUST call the search_properties tool for ANY of these:\n- Location mentions (marbella, estepona, etc.)\n- Property types (villa, apartment, penthouse, etc.)\n- Price mentions (under 500k, budget 800k, above 1m, between X and Y)\n- Bedroom mentions (3 bed, 4 bedroom)\n- Reference numbers (R5272630, ref 12345)\n- Filter changes (under 500k, cheaper, more expensive)\n- Reset commands (reset, clear, start over)\n\n## NEVER respond about properties without calling the tool first!\n\nEven if you remember a previous search, you MUST call the tool again when the user:\n- Mentions ANY price (\"under 500k\", \"budget 1m\")\n- Mentions bedrooms (\"3 bed\", \"4 bedroom\")\n- Changes any filter\n- Asks to see different results\n\n## Examples - ALL MUST call search_properties:\n- \"villas in marbella\" -> CALL TOOL\n- \"under 500k\" -> CALL TOOL (adds price filter)\n- \"3 bed\" -> CALL TOOL (adds bedroom filter)\n- \"show me cheaper ones\" -> CALL TOOL\n- \"apartments instead\" -> CALL TOOL\n- \"reset\" -> CALL TOOL\n- \"R5272630\" -> CALL TOOL\n\n## CRITICAL: PASS THROUGH TOOL RESPONSE EXACTLY\n\nWhen the search_properties tool returns results, you MUST:\n1. Output the EXACT response from the tool - do NOT reformat or rewrite it\n2. Preserve ALL formatting including location headings, emojis, and line breaks\n3. Do NOT summarize, paraphrase, or reorganize the results\n4. Do NOT add numbering if the response doesn't have it\n5. Simply return the tool's response as-is\n\n### MULTI-LOCATION RESULTS\nWhen the tool returns results with location headings like:\n```\n**Mijas**\n[properties]\n\n**Marbella**\n[properties]\n```\nYou MUST preserve these headings exactly. Do NOT merge locations or remove headings.\n\n## OTHER TOOLS\n| Tool | Use Case |\n|------|----------|\n| get_weather | Weather information |\n| get_golf_guide | Golf course info |\n| get_schools_guide | International schools info |\n\n## ENDING CONVERSATIONS\nWhen user says bye: \"Perfect! Have a great day!\\nCHAT_END_CONFIRMED\"\n\n---"
+        }
+      },
+      "id": "ai-agent",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        240,
+        -100
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "postgres-memory",
+      "name": "Postgres Chat Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [
+        80,
+        120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-4o",
+        "options": {
+          "maxTokens": 500,
+          "temperature": 0.2
+        }
+      },
+      "id": "openrouter-llm",
+      "name": "OpenRouter Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        120
+      ],
+      "credentials": {
+        "openRouterApi": {
+          "id": "BMQz1Fcp3085Fnup",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "description": "Search for properties. MUST call this tool for ANY property-related input including: location, property type, price (under 500k, budget 1m), bedrooms (3 bed), reference numbers (R5272630), reset commands, help/commands requests, or ANY filter change. Call this even for partial inputs like just 'under 500k' or '3 bed' or 'help'.",
+        "jsCode": "// ============================================\n// SMART PROPERTY SEARCH WITH NLP\n// Supports: location+type, ref_no, reset, partial searches\n// ============================================\n\nconst context = $json || $input.first().json || {};\nconst LOCATION_MAP = context.LOCATION_MAP || {};\nconst TYPE_MAP = context.TYPE_MAP || {};\nconst CLIENT_ID = context.CLIENT_ID || '';\nconst PROP_DETAIL_URL = context.PROP_DETAIL_URL || '';\nconst sessionId = context.sessionId || '';\nconst chatInput = (context.chatInput || '').toLowerCase();\n\n// ============================================\n// HELPER FUNCTIONS\n// ============================================\n\n// Find location in chatInput (returns single best match)\nfunction findLocation(query, locationMap) {\n  const q = query.toLowerCase();\n  let bestMatch = null;\n  let bestId = null;\n  let bestLen = 0;\n  \n  for (const [name, id] of Object.entries(locationMap)) {\n    const nameLower = name.toLowerCase();\n    if (q.includes(nameLower)) {\n      if (nameLower.length > bestLen) {\n        bestLen = nameLower.length;\n        bestMatch = name;\n        bestId = id;\n      }\n    }\n  }\n  \n  return bestMatch ? { match: bestMatch, id: bestId } : null;\n}\n\n// Find property type - prioritize LONGEST match (most specific)\n// e.g., \"ground floor apartment\" matches \"Ground Floor Apartment\" not just \"Apartment\"\nfunction findPropertyType(query, typeMap) {\n  let q = query.toLowerCase();\n  \n  // Keyword aliases: map common user terms to API type names\n  // This runs BEFORE matching so \"villa\" becomes \"detached villa\" for matching\n  const keywordAliases = {\n    'villa': 'detached villa',\n    'villas': 'detached villa',\n    'flat': 'apartment',\n    'flats': 'apartment'\n  };\n  \n  // Apply aliases - replace standalone keywords with their API equivalents\n  for (const [keyword, replacement] of Object.entries(keywordAliases)) {\n    // Use word boundary regex to match standalone words only\n    const regex = new RegExp(`\\\\b${keyword}\\\\b`, 'gi');\n    if (regex.test(q) && !q.includes(replacement)) {\n      q = q.replace(regex, replacement);\n    }\n  }\n  \n  let bestMatch = null;\n  let bestId = null;\n  let bestLen = 0;\n\n  // Find the LONGEST matching type (most specific)\n  for (const [typeName, typeId] of Object.entries(typeMap)) {\n    const nameLower = typeName.toLowerCase();\n    if (q.includes(nameLower)) {\n      // Prefer longer matches (more specific)\n      if (nameLower.length > bestLen) {\n        bestLen = nameLower.length;\n        bestMatch = typeName;\n        bestId = typeId;\n      }\n    }\n  }\n\n  return bestMatch ? { match: bestMatch, id: bestId } : null;\n}\n\n// Parse price from natural language\nfunction parsePrice(query) {\n  const q = query.toLowerCase();\n  let price_min = null, price_max = null;\n\n  const normalizeNumber = (num, suffix) => {\n    let value = parseFloat(num.replace(/,/g, ''));\n    if (suffix) {\n      if (suffix.toLowerCase() === 'k') value *= 1000;\n      if (suffix.toLowerCase() === 'm') value *= 1000000;\n    }\n    return value;\n  };\n\n  const between = q.match(/between\\s*[\\u20ac$]?\\s*([\\d,.]+)\\s*([km])?\\s*(?:and|to|-)\\s*[\\u20ac$]?\\s*([\\d,.]+)\\s*([km])?/i);\n  if (between) {\n    price_min = normalizeNumber(between[1], between[2]);\n    price_max = normalizeNumber(between[3], between[4]);\n    return { price_min, price_max };\n  }\n\n  const maxMatch = q.match(/(?:under|below|max|maximum|budget|up\\s*to|less\\s*than)\\s*[\\u20ac$]?\\s*([\\d,.]+)\\s*([km])?/i);\n  if (maxMatch) {\n    price_max = normalizeNumber(maxMatch[1], maxMatch[2]);\n    return { price_min, price_max };\n  }\n\n  const minMatch = q.match(/(?:above|over|min|minimum|from|starting|at\\s*least|more\\s*than)\\s*[\\u20ac$]?\\s*([\\d,.]+)\\s*([km])?/i);\n  if (minMatch) {\n    price_min = normalizeNumber(minMatch[1], minMatch[2]);\n    return { price_min, price_max };\n  }\n\n  return { price_min, price_max };\n}\n\n// Parse bedrooms from query - returns { min, max }\n// \"3 bed\" = 3+ bedrooms (min=3, max=0)\n// \"exactly 3 bed\" = exactly 3 (min=3, max=3)\nfunction parseBedrooms(query) {\n  const exactMatch = query.match(/exactly\\s+(\\d+)\\s*(?:bed|bedroom|bedrooms|br)/i);\n  if (exactMatch) {\n    const num = parseInt(exactMatch[1]);\n    return { min: num, max: num };\n  }\n  const bedroomMatch = query.match(/(\\d+)\\s*[-]?\\s*(?:bed|bedroom|bedrooms|br)/i);\n  if (bedroomMatch) {\n    return { min: parseInt(bedroomMatch[1]), max: 0 };\n  }\n  return { min: 0, max: 0 };\n}\n\n// Parse bathrooms from query - returns { min, max }\nfunction parseBathrooms(query) {\n  const exactMatch = query.match(/exactly\\s+(\\d+)\\s*(?:bath|bathroom|bathrooms)/i);\n  if (exactMatch) {\n    const num = parseInt(exactMatch[1]);\n    return { min: num, max: num };\n  }\n  const bathMatch = query.match(/(\\d+)\\s*[-]?\\s*(?:bath|bathroom|bathrooms)/i);\n  if (bathMatch) {\n    return { min: parseInt(bathMatch[1]), max: 0 };\n  }\n  return { min: 0, max: 0 };\n}\n\n// Parse reference number\nfunction parseRefNo(query) {\n  // 1. Always match explicit \"ref\" prefix patterns (e.g., \"ref 1234567\", \"reference: 1234567\")\n  const explicitRef = query.match(/ref(?:erence)?[\\s:#]*([A-Z]?\\d{4,10})/i);\n  if (explicitRef) {\n    let refNo = explicitRef[1].toUpperCase();\n    if (/^\\d+$/.test(refNo)) refNo = 'R' + refNo;\n    return refNo;\n  }\n\n  // 2. Always match R-prefixed numbers (e.g., \"R5272630\")\n  const rPrefixed = query.match(/\\b(R\\d{5,10})\\b/i);\n  if (rPrefixed) {\n    return rPrefixed[1].toUpperCase();\n  }\n\n  // 3. For bare numbers (no ref/R prefix), only match if NO price keywords present\n  const priceKeywords = /(?:under|below|max|maximum|budget|up\\s*to|upto|less\\s*than|above|over|min|minimum|from|starting|at\\s*least|more\\s*than|between|price|cost|\\u20ac|\\$|\\u00a3)/i;\n  if (!priceKeywords.test(query)) {\n    const bareNumber = query.match(/\\b(\\d{5,10})\\b/);\n    if (bareNumber) {\n      return 'R' + bareNumber[1];\n    }\n  }\n\n  return null;\n}\n\n// Find multiple locations - handles \"and\"/\"or\" queries properly\n// Returns array of unique locations found in the query\nfunction findMultipleLocations(query, locationMap) {\n  const locations = [];\n  const q = query.toLowerCase();\n  const seenIds = new Set();\n\n  // Check each location in the map\n  for (const [name, id] of Object.entries(locationMap)) {\n    const nameLower = name.toLowerCase();\n    // Check if this location appears in the query\n    if (q.includes(nameLower) && !seenIds.has(id)) {\n      seenIds.add(id);\n      locations.push({ name, id });\n    }\n  }\n\n  return locations;\n}\n\n// ============================================\n// MAIN LOGIC\n// ============================================\n\n// Check for help command\nconst helpPatterns = /^(help|commands|tips|how to|what can you do|features)$/i;\nif (helpPatterns.test(chatInput.trim())) {\n  return '📋 **Available Commands:**\\n\\n' +\n    '🔍 **Search:** \"villas in marbella\", \"3 bed apartments estepona\"\\n' +\n    '💰 **Price:** \"under 500k\", \"budget 1m\", \"between 300k and 600k\"\\n' +\n    '🛏️ **Bedrooms:** \"3 bed\", \"4 bedroom\"\\n' +\n    '🔑 **Reference:** \"R5272630\" or just \"5272630\"\\n' +\n    '🔄 **Reset:** \"reset\" - clears all filters\\n' +\n    '\\n💡 **Tips:**\\n' +\n    '• Filters stack - add \"under 500k\" to narrow results\\n' +\n    '• Say \"reset\" to start fresh anytime\\n' +\n    '• Ask for \"more\" to see additional properties';\n}\n\n// Check for reset command\nconst resetPatterns = /^(reset|clear|start over|clear filters|new search|fresh start)$/i;\nif (resetPatterns.test(chatInput.trim())) {\n  try {\n    await this.helpers.httpRequest({\n      method: 'POST',\n      url: 'https://n8n.realtysoft.ai/webhook/property-search',\n      body: {\n        CLIENT_ID: CLIENT_ID,\n        session_id: sessionId,\n        location_name: '',\n        property_type: '',\n        list_price_min: 0,\n        list_price_max: 0,\n        bedrooms_min: 0,\n        bedrooms_max: 0,\n        bathrooms_min: 0,\n        bathrooms_max: 0,\n        features: '',\n        clear_all_filters: true\n      },\n      headers: { 'Content-Type': 'application/json' },\n      json: true\n    });\n  } catch (e) {}\n  return '✅ All filters have been cleared! You can now start a fresh search.\\n\\nWhat type of property are you looking for? For example: \"villas in marbella\" or \"3 bed apartments in estepona\"';\n}\n\n// Check for reference number\nconst refNo = parseRefNo(chatInput);\nif (refNo) {\n  try {\n    const response = await this.helpers.httpRequest({\n      method: 'POST',\n      url: 'https://n8n.realtysoft.ai/webhook/property-search',\n      body: { CLIENT_ID: CLIENT_ID, session_id: sessionId, ref_no: refNo, PROP_DETAIL_URL: PROP_DETAIL_URL },\n      headers: { 'Content-Type': 'application/json' },\n      json: true\n    });\n    if (response && response.result) return response.result;\n    return `No property found with reference ${refNo}.`;\n  } catch (error) {\n    return 'I encountered an issue searching for that property. Please try again.';\n  }\n}\n\n// Standard search - parse all parameters\nconst typeResult = findPropertyType(chatInput, TYPE_MAP);\nconst priceResult = parsePrice(chatInput);\nconst bedrooms = parseBedrooms(chatInput);\nconst bathrooms = parseBathrooms(chatInput);\n\n// Find locations (check for multiple)\nconst multiLocations = findMultipleLocations(chatInput, LOCATION_MAP);\nconst singleLocation = findLocation(chatInput, LOCATION_MAP);\n\n// Build request body with multi-location support\n// When multiple locations found -> use location_ids array and search_mode: 'multi'\n// When single location found -> use location_id and search_mode: 'single'\nconst requestBody = {\n  CLIENT_ID: CLIENT_ID,\n  session_id: sessionId,\n\n  // Multi-location support\n  // When multiple locations: use location_ids array and set location_id to null\n  // When single location: use location_id\n  location_id: multiLocations.length > 1 ? null : (multiLocations.length === 1 ? multiLocations[0].id : (singleLocation ? singleLocation.id : null)),\n  location_name: multiLocations.length > 1 ? '' : (multiLocations.length === 1 ? multiLocations[0].name : (singleLocation ? singleLocation.match : '')),\n  location_ids: multiLocations.length > 1 ? multiLocations.map(l => l.id) : [],\n  location_names: multiLocations.length > 1 ? multiLocations.map(l => l.name) : [],\n  search_mode: multiLocations.length > 1 ? 'multi' : 'single',\n\n  // Property type (now uses longest match)\n  property_type: typeResult ? typeResult.match : '',\n  type_id: typeResult ? typeResult.id : null,\n\n  // Price filters\n  list_price_min: priceResult.price_min || 0,\n  list_price_max: priceResult.price_max || 0,\n\n  // Bedroom/bathroom filters\n  bedrooms_min: bedrooms.min || 0,\n  bedrooms_max: bedrooms.max || 0,\n  bathrooms_min: bathrooms.min || 0,\n  bathrooms_max: bathrooms.max || 0,\n\n  // Additional context\n  pre_parsed: (multiLocations.length > 0 || singleLocation) && typeResult ? true : false,\n  PROP_DETAIL_URL: PROP_DETAIL_URL\n};\n\ntry {\n  const response = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://n8n.realtysoft.ai/webhook/property-search',\n    body: requestBody,\n    headers: { 'Content-Type': 'application/json' },\n    json: true\n  });\n  \n  if (response && response.result) return response.result;\n  if (response && response.formatted_response) return response.formatted_response;\n  if (typeof response === 'string') return response;\n  return JSON.stringify(response);\n} catch (error) {\n  return 'I encountered an issue searching for properties. Please try again.';\n}"
+      },
+      "id": "tool-search-properties",
+      "name": "search_properties",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        240,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Get current weather information for any location",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "location": "={{ $fromAI('location', '', 'string') }}"
+          },
+          "matchingColumns": [
+            "location"
+          ],
+          "schema": [
+            {
+              "id": "location",
+              "displayName": "location",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "tool-weather",
+      "name": "get_weather",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        400,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Retrieves golf courses guide for Costa del Sol and surrounding areas",
+        "url": "https://docs.google.com/document/d/1WXMWGtWCOIg_djO-r2d-I0LH13ADN2UUVfhHnQuHub8/export?format=txt",
+        "options": {},
+        "optimizeResponse": true,
+        "responseType": "text"
+      },
+      "id": "tool-golf-guide",
+      "name": "get_golf_guide",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.3,
+      "position": [
+        560,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Retrieves international schools guide for Costa del Sol and surrounding areas",
+        "url": "https://docs.google.com/document/d/1nF7L9j_rMJPXwGHKOGQX4thTYbaWUiCYT0iW61GkCkU/export?format=txt",
+        "options": {},
+        "optimizeResponse": true,
+        "responseType": "text"
+      },
+      "id": "tool-schools-guide",
+      "name": "get_schools_guide",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.3,
+      "position": [
+        720,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputData = $input.first().json;\nconst agentResponse = inputData.output || inputData.text || inputData.response || inputData.content || inputData.message || '';\nconst sessionId = inputData.sessionId || inputData.session_id || '';\nconst clientId = inputData.client_id || inputData.CLIENT_ID || '';\n\nconst userData = {\n  name: inputData.name || '',\n  email: inputData.email || '',\n  phone: inputData.phone || ''\n};\n\nlet result = {\n  event_detected: false,\n  event_type: 'none',\n  session_id: sessionId,\n  client_id: clientId,\n  clean_response: agentResponse,\n  user_data: userData\n};\n\n// Check for STORE_USER_DATA marker\nconst storeDataPattern = /STORE_USER_DATA:\\s*name=\\[(.*?)\\],\\s*email=\\[(.*?)\\],\\s*phone=\\[(.*?)\\]/i;\nconst storeDataMatch = agentResponse.match(storeDataPattern);\n\nif (storeDataMatch) {\n  result.event_detected = true;\n  result.event_type = 'store_contact';\n  result.user_data = {\n    full_name: storeDataMatch[1].trim() || null,\n    email: storeDataMatch[2].trim() || null,\n    phone: storeDataMatch[3].trim() || null,\n    session_id: sessionId,\n    client_id: clientId\n  };\n  result.clean_response = agentResponse.replace(storeDataPattern, '').trim();\n}\n\n// Check for CHAT_END_CONFIRMED marker\nif (agentResponse && agentResponse.includes('CHAT_END_CONFIRMED')) {\n  result.event_detected = true;\n  result.event_type = 'chat_end';\n  result.clean_response = agentResponse.replace(/CHAT_END_CONFIRMED/g, '').trim();\n}\n\n// Safety: ensure we always have something in clean_response\nif (!result.clean_response || result.clean_response.trim() === '') {\n  result.clean_response = agentResponse || \"I'm here to help!\";\n}\n\nreturn result;"
+      },
+      "id": "check-events",
+      "name": "Check for Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "store_contact",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "store"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Save Contact"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "chat_end",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "end"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Send Email"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.event_type }}",
+                    "rightValue": "none",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "none"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Continue"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "route-by-event",
+      "name": "Route by Event",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        960,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO user_contact_details (\n  session_id, full_name, email, phone, client_id,\n  first_seen, last_seen, chat_ended, created_at\n) VALUES (\n  '{{ $json.session_id }}',\n  '{{ $json.user_data.full_name }}',\n  '{{ $json.user_data.email }}',\n  '{{ $json.user_data.phone }}',\n  '{{ $json.user_data.client_id }}',\n  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, false, CURRENT_TIMESTAMP\n)\nON CONFLICT (session_id) DO UPDATE SET\n  full_name = COALESCE(EXCLUDED.full_name, user_contact_details.full_name),\n  email = COALESCE(EXCLUDED.email, user_contact_details.email),\n  phone = COALESCE(EXCLUDED.phone, user_contact_details.phone),\n  last_seen = CURRENT_TIMESTAMP;",
+        "options": {}
+      },
+      "id": "save-contact",
+      "name": "Save Contact to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1200,
+        -200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "CPFplUVPFDKLMdQn",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "owner_email": "={{ $('Prepare Client Context').item.json.OWNER_EMAIL }}",
+            "user_email": "={{ $json.user_data.email }}",
+            "user_name": "={{ $json.user_data.name }}",
+            "client_id": "={{ $json.client_id }}",
+            "user_phone": "={{ $json.user_data.phone }}",
+            "sessionId": "={{ $json.session_id }}"
+          },
+          "matchingColumns": [
+            "session_id"
+          ],
+          "schema": [
+            {
+              "id": "sessionId",
+              "displayName": "sessionId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "owner_email",
+              "displayName": "owner_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "user_email",
+              "displayName": "user_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "user_name",
+              "displayName": "user_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "client_id",
+              "displayName": "client_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            },
+            {
+              "id": "user_phone",
+              "displayName": "user_phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string"
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "trigger-email",
+      "name": "Trigger Email Workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1200,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "text",
+              "name": "text",
+              "value": "={{ $json.clean_response }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "clean-response",
+      "name": "Clean Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO user_contact_details (\n  session_id, full_name, email, phone, client_id,\n  first_seen, last_seen, created_at, chat_ended\n) VALUES (\n  '{{ $json.sessionId }}',\n  '{{ $json.name }}',\n  '{{ $json.email }}',\n  '{{ $json.phone }}',\n  '{{ $('Prepare Client Context').item.json.CLIENT_ID }}',\n  NOW(), NOW(), NOW(), FALSE\n)\nON CONFLICT (session_id) DO UPDATE SET\n  full_name = EXCLUDED.full_name,\n  email = EXCLUDED.email,\n  phone = EXCLUDED.phone,\n  last_seen = NOW();",
+        "options": {}
+      },
+      "id": "save-contact-direct",
+      "name": "Save Contact Direct",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        240
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{ \"success\": true, \"message\": \"Contact stored successfully\" }",
+        "options": {}
+      },
+      "id": "respond-stored",
+      "name": "Respond Stored",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        480,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare endChat request for Route by Event\nconst ctx = $('Prepare Client Context').first().json;\nconst data = $input.first().json;\n\nreturn {\n  json: {\n    event_type: 'chat_end',\n    event_detected: true,\n    session_id: data.sessionId || ctx.sessionId,\n    client_id: data.CLIENT_ID || ctx.CLIENT_ID,\n    clean_response: 'Chat transcript sent!',\n    user_data: {\n      name: data.name || '',\n      email: data.email || '',\n      phone: data.phone || ''\n    }\n  }\n};"
+      },
+      "id": "prepare-end-chat",
+      "name": "Prepare End Chat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        200
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "Extract Client Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Client Config": {
+      "main": [
+        [
+          {
+            "node": "Load Client Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Client Variables": {
+      "main": [
+        [
+          {
+            "node": "Prepare Client Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Client Context": {
+      "main": [
+        [
+          {
+            "node": "Route by Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Action": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Contact Direct",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare End Chat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Check for Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search_properties": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_weather": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_golf_guide": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_schools_guide": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check for Events": {
+      "main": [
+        [
+          {
+            "node": "Route by Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Event": {
+      "main": [
+        [
+          {
+            "node": "Save Contact to DB",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Clean Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Clean Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Trigger Email Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Clean Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Contact Direct": {
+      "main": [
+        [
+          {
+            "node": "Respond Stored",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare End Chat": {
+      "main": [
+        [
+          {
+            "node": "Route by Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "510dc0afdd5ec9c3843be833c714a2623974a2058ec95eb59daf867d1c4b0dcb"
+  },
+  "id": "",
+  "tags": []
+}

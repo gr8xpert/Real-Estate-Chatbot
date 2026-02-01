@@ -1,0 +1,452 @@
+{
+  "name": "Property Services",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "property-search",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-property-search",
+      "name": "Property Search Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [-1200, 200],
+      "webhookId": "property-search-webhook-id"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  session_id,\n  location_name,\n  property_type,\n  list_price_min,\n  list_price_max,\n  bedrooms_min,\n  bedrooms_max,\n  bathrooms_min,\n  bathrooms_max,\n  features\nFROM search_context\nWHERE session_id = '{{ $json.body.session_id }}'\nUNION ALL\nSELECT \n  '{{ $json.body.session_id }}' as session_id,\n  '' as location_name,\n  '' as property_type,\n  0 as list_price_min,\n  0 as list_price_max,\n  0 as bedrooms_min,\n  0 as bedrooms_max,\n  0 as bathrooms_min,\n  0 as bathrooms_max,\n  '' as features\nWHERE NOT EXISTS (\n  SELECT 1 FROM search_context WHERE session_id = '{{ $json.body.session_id }}'\n)\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "load-search-context",
+      "name": "Load Search Context",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [-960, 200],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge Request with Context\n// Handles clear_all_filters and clear_*_filters flags\n\nconst webhook = $('Property Search Webhook').first().json.body || {};\nconst savedContext = $input.first().json || {};\nconst clearAll = webhook.clear_all_filters === true;\n\nconst merged = {\n  CLIENT_ID: webhook.CLIENT_ID || '',\n  session_id: webhook.session_id || '',\n  \n  // Core search parameters - DON'T use saved context if clear_all_filters\n  location_name: clearAll ? '' : (webhook.location_name || savedContext.location_name || ''),\n  property_type: clearAll ? '' : (webhook.property_type || savedContext.property_type || ''),\n  \n  // Price filters\n  list_price_min: (clearAll || webhook.clear_price_filters)\n    ? (parseInt(webhook.list_price_min) || 0)\n    : (parseInt(webhook.list_price_min) || parseInt(savedContext.list_price_min) || 0),\n  \n  list_price_max: (clearAll || webhook.clear_price_filters)\n    ? (parseInt(webhook.list_price_max) || 0)\n    : (parseInt(webhook.list_price_max) || parseInt(savedContext.list_price_max) || 0),\n  \n  // Bedroom filters\n  bedrooms_min: (clearAll || webhook.clear_bedroom_filters)\n    ? (parseInt(webhook.bedrooms_min) || 0)\n    : (parseInt(webhook.bedrooms_min) || parseInt(savedContext.bedrooms_min) || 0),\n  \n  bedrooms_max: (clearAll || webhook.clear_bedroom_filters)\n    ? (parseInt(webhook.bedrooms_max) || 0)\n    : (parseInt(webhook.bedrooms_max) || parseInt(savedContext.bedrooms_max) || 0),\n  \n  // Bathroom filters\n  bathrooms_min: (clearAll || webhook.clear_bathroom_filters)\n    ? (parseInt(webhook.bathrooms_min) || 0)\n    : (parseInt(webhook.bathrooms_min) || parseInt(savedContext.bathrooms_min) || 0),\n  \n  bathrooms_max: (clearAll || webhook.clear_bathroom_filters)\n    ? (parseInt(webhook.bathrooms_max) || 0)\n    : (parseInt(webhook.bathrooms_max) || parseInt(savedContext.bathrooms_max) || 0),\n  \n  // Features\n  features: clearAll ? '' : (webhook.features || savedContext.features || ''),\n  \n  // Pagination\n  page: parseInt(webhook.page) || 1,\n  limit: parseInt(webhook.limit) || parseInt(savedContext.limit) || 20,\n  \n  // Other parameters\n  language: webhook.language || 'en_US',\n  ref_no: webhook.ref_no || '',\n  listing_type: webhook.listing_type || '',\n  order: webhook.order || 'last_date_desc',\n  \n  // Size parameters\n  build_size_min: parseInt(webhook.build_size_min) || 0,\n  build_size_max: parseInt(webhook.build_size_max) || 0,\n  plot_size_min: parseInt(webhook.plot_size_min) || 0,\n  plot_size_max: parseInt(webhook.plot_size_max) || 0,\n  \n  // Property URL - client-specific detail page\n  PROP_DETAIL_URL: webhook.PROP_DETAIL_URL || '',\n  \n  // Reset flag\n  clear_all_filters: clearAll ? 'true' : 'false'\n};\n\nreturn { json: merged };"
+      },
+      "id": "merge-request-context",
+      "name": "Merge Request with Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-720, 200]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO search_context (\n  session_id, location_name, property_type, list_price_min, list_price_max,\n  bedrooms_min, bedrooms_max, bathrooms_min, bathrooms_max, features, updated_at\n) VALUES (\n  '{{ $json.session_id }}', '{{ $json.location_name }}', '{{ $json.property_type }}',\n  {{ $json.list_price_min || 0 }}, {{ $json.list_price_max || 0 }},\n  {{ $json.bedrooms_min || 0 }}, {{ $json.bedrooms_max || 0 }},\n  {{ $json.bathrooms_min || 0 }}, {{ $json.bathrooms_max || 0 }},\n  '{{ $json.features || \"\" }}', NOW()\n)\nON CONFLICT (session_id) DO UPDATE SET\n  location_name = CASE WHEN '{{ $json.clear_all_filters }}' = 'true' THEN '' WHEN EXCLUDED.location_name != '' THEN EXCLUDED.location_name ELSE search_context.location_name END,\n  property_type = CASE WHEN '{{ $json.clear_all_filters }}' = 'true' THEN '' WHEN EXCLUDED.property_type != '' THEN EXCLUDED.property_type ELSE search_context.property_type END,\n  list_price_min = CASE WHEN '{{ $json.clear_all_filters }}' = 'true' THEN 0 WHEN EXCLUDED.list_price_min > 0 THEN EXCLUDED.list_price_min ELSE search_context.list_price_min END,\n  list_price_max = CASE WHEN '{{ $json.clear_all_filters }}' = 'true' THEN 0 WHEN EXCLUDED.list_price_max > 0 THEN EXCLUDED.list_price_max ELSE search_context.list_price_max END,\n  bedrooms_min = CASE WHEN '{{ $json.clear_all_filters }}' = 'true' THEN 0 WHEN EXCLUDED.bedrooms_min > 0 THEN EXCLUDED.bedrooms_min ELSE search_context.bedrooms_min END,\n  bedrooms_max = CASE WHEN '{{ $json.clear_all_filters }}' = 'true' THEN 0 WHEN EXCLUDED.bedrooms_max > 0 THEN EXCLUDED.bedrooms_max ELSE search_context.bedrooms_max END,\n  bathrooms_min = CASE WHEN '{{ $json.clear_all_filters }}' = 'true' THEN 0 WHEN EXCLUDED.bathrooms_min > 0 THEN EXCLUDED.bathrooms_min ELSE search_context.bathrooms_min END,\n  bathrooms_max = CASE WHEN '{{ $json.clear_all_filters }}' = 'true' THEN 0 WHEN EXCLUDED.bathrooms_max > 0 THEN EXCLUDED.bathrooms_max ELSE search_context.bathrooms_max END,\n  features = CASE WHEN '{{ $json.clear_all_filters }}' = 'true' THEN '' WHEN EXCLUDED.features != '' THEN EXCLUDED.features ELSE search_context.features END,\n  updated_at = NOW()\nRETURNING *;",
+        "options": {}
+      },
+      "id": "save-early-context",
+      "name": "Save Early Context",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [-600, 200],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  variables->>'LOCATION_MAP' as location_map,\n  variables->>'TYPE_MAP' as type_map,\n  variables->>'FEATURE_MAP' as feature_map,\n  variables->>'PROP_API_BASE_URL' as prop_api_base_url,\n  variables->>'PROP_AUTH_HEADER' as prop_auth_header\nFROM client_variables\nWHERE client_id = '{{ $('Merge Request with Context').first().json.CLIENT_ID }}';",
+        "options": {}
+      },
+      "id": "load-client-maps",
+      "name": "Load Client Maps",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [-480, 200],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// VALIDATE & LOOKUP IDs\n// Supports pre_parsed data, multi-location, ref_no, and reset\n// ============================================\n\nconst mergedData = $('Merge Request with Context').first().json;\nconst webhookData = $('Property Search Webhook').first().json.body || {};\nconst mapsData = $input.first()?.json || {};\n\n// ============================================\n// CHECK FOR RESET SESSION REQUEST\n// ============================================\n\nif (webhookData.reset_session === true) {\n  const sessionId = webhookData.session_id || mergedData.session_id || '';\n  return {\n    json: {\n      skip_search: true,\n      reset_session: true,\n      session_id: sessionId,\n      result: 'Session reset successfully'\n    }\n  };\n}\n\n// ============================================\n// CHECK FOR REFERENCE NUMBER SEARCH\n// If ref_no provided, skip location/type validation\n// ============================================\n\nconst refNo = webhookData.ref_no || mergedData.ref_no || '';\nif (refNo && refNo.trim() !== '') {\n  // Reference number search - no location/type needed\n  return {\n    json: {\n      skip_search: false,\n      ref_no: refNo.trim(),\n      location_id: null,\n      type_id: null,\n      search_mode: 'ref_no'\n    }\n  };\n}\n\n// ============================================\n// CHECK FOR MULTI-LOCATION SEARCH (always check this first)\n// ============================================\n\nconst location_ids_from_webhook = webhookData.location_ids || [];\nconst search_mode_from_webhook = webhookData.search_mode || 'single';\n\nif (search_mode_from_webhook === 'multi' && location_ids_from_webhook.length > 1) {\n  // Multi-location search - use IDs from ChatBot directly\n  return {\n    json: {\n      skip_search: false,\n      location_id: null,\n      location_ids: location_ids_from_webhook,\n      type_id: webhookData.type_id || null,\n      feature_ids: null,\n      search_mode: 'multi',\n      pre_parsed: true\n    }\n  };\n}\n\n// ============================================\n// CHECK FOR PRE-PARSED DATA (from ChatBot smart parsing)\n// ============================================\n\nif (webhookData.pre_parsed === true) {\n  // Data already validated and IDs resolved by ChatBot\n  // Skip redundant validation for better performance\n  \n  const LOCATION_MAP = (typeof mapsData.location_map === 'object') ? (mapsData.location_map || {}) : JSON.parse(mapsData.location_map || '{}');\n  const TYPE_MAP = (typeof mapsData.type_map === 'object') ? (mapsData.type_map || {}) : JSON.parse(mapsData.type_map || '{}');\n  const FEATURE_MAP = (typeof mapsData.feature_map === 'object') ? (mapsData.feature_map || {}) : JSON.parse(mapsData.feature_map || '{}');\n  \n  // Handle multi-location mode\n  const search_mode = webhookData.search_mode || 'single';\n  const location_ids = webhookData.location_ids || [];\n  \n  return {\n    json: {\n      skip_search: false,\n      location_id: webhookData.location_id,\n      location_ids: location_ids,\n      type_id: webhookData.type_id,\n      feature_ids: null, // Will be resolved below if needed\n      search_mode: search_mode,\n      LOCATION_MAP,\n      TYPE_MAP,\n      FEATURE_MAP,\n      pre_parsed: true\n    }\n  };\n}\n\n// ============================================\n// STANDARD VALIDATION (backwards compatible)\n// ============================================\n\nconst LOCATION_MAP = (typeof mapsData.location_map === 'object') ? (mapsData.location_map || {}) : JSON.parse(mapsData.location_map || '{}');\nconst TYPE_MAP = (typeof mapsData.type_map === 'object') ? (mapsData.type_map || {}) : JSON.parse(mapsData.type_map || '{}');\nconst FEATURE_MAP = (typeof mapsData.feature_map === 'object') ? (mapsData.feature_map || {}) : JSON.parse(mapsData.feature_map || '{}');\n\nfunction normalize(str) {\n  if (!str) return '';\n  return str.toString().toLowerCase().trim();\n}\n\nfunction findId(name, map) {\n  if (!name) return null;\n  const norm = normalize(name);\n  // Remove trailing 's' for plural handling\n  const normSingular = norm.replace(/s$/, '');\n  \n  for (const [key, value] of Object.entries(map)) {\n    const keyNorm = normalize(key);\n    const keySingular = keyNorm.replace(/s$/, '');\n    \n    // Exact match\n    if (keyNorm === norm) return value;\n    // Singular match\n    if (keySingular === normSingular) return value;\n    // Contains match (for compound types)\n    if (keyNorm.includes(norm) || norm.includes(keyNorm)) return value;\n  }\n  return null;\n}\n\nfunction getAvailableOptions(map, limit = 15) {\n  const keys = Object.keys(map);\n  if (keys.length === 0) return 'none available';\n  if (keys.length <= limit) return keys.join(', ');\n  return keys.slice(0, limit).join(', ') + ` and ${keys.length - limit} more`;\n}\n\nlet skip_search = false;\nlet errorMessage = '';\n\nconst hasLocation = mergedData.location_name && mergedData.location_name.trim() !== '';\nconst hasType = mergedData.property_type && mergedData.property_type.trim() !== '';\n\n// Validation rules\nif (!hasLocation && !hasType) {\n  skip_search = true;\n  errorMessage = `Please tell me what you're looking for!\\n\\nI need both:\\n📍 **Location** (e.g., Marbella, Estepona)\\n🏠 **Property type** (e.g., villa, apartment)\\n\\nFor example: \"3 bedroom villas in Marbella\"`;\n  return { json: { skip_search: true, result: errorMessage } };\n}\n\nif (!hasLocation && hasType) {\n  skip_search = true;\n  errorMessage = `Which location are you interested in?\\n\\n**Available locations:**\\n${getAvailableOptions(LOCATION_MAP, 20)}`;\n  return { json: { skip_search: true, result: errorMessage } };\n}\n\nif (hasLocation && !hasType) {\n  skip_search = true;\n  errorMessage = `What type of property are you looking for?\\n\\n**Available types:**\\n${getAvailableOptions(TYPE_MAP, 10)}`;\n  return { json: { skip_search: true, result: errorMessage } };\n}\n\nconst location_id = findId(mergedData.location_name, LOCATION_MAP);\nconst type_id = findId(mergedData.property_type, TYPE_MAP);\n\nif (!location_id && !type_id) {\n  return { json: { skip_search: true, result: `I couldn't find matches for both location and property type.\\n\\n**Available locations:** ${getAvailableOptions(LOCATION_MAP, 15)}\\n\\n**Available types:** ${getAvailableOptions(TYPE_MAP, 10)}` } };\n}\n\nif (!location_id) {\n  return { json: { skip_search: true, result: `I couldn't find properties in \"${mergedData.location_name}\".\\n\\n**Available locations:**\\n${getAvailableOptions(LOCATION_MAP, 20)}` } };\n}\n\nif (!type_id) {\n  return { json: { skip_search: true, result: `I couldn't find \"${mergedData.property_type}\" in our property types.\\n\\n**Available types:**\\n${getAvailableOptions(TYPE_MAP, 10)}` } };\n}\n\n// Find feature IDs\nlet feature_ids = null;\nif (mergedData.features) {\n  const featureNames = mergedData.features.split(',').map(f => f.trim()).filter(Boolean);\n  const ids = featureNames.map(fname => findId(fname, FEATURE_MAP)).filter(Boolean);\n  if (ids.length > 0) feature_ids = ids.join(',');\n}\n\nreturn { json: { skip_search: false, location_id, type_id, feature_ids, search_mode: 'single', location_ids: [], LOCATION_MAP, TYPE_MAP, FEATURE_MAP } };"
+      },
+      "id": "validate-lookup",
+      "name": "Validate & Lookup IDs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-240, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [{ "id": "check-skip", "leftValue": "={{ $json.skip_search }}", "rightValue": "", "operator": { "type": "boolean", "operation": "true", "singleValue": true } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-validation",
+      "name": "Check Validation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [0, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const lookupData = $('Validate & Lookup IDs').first().json;\nreturn { json: { result: lookupData.result } };"
+      },
+      "id": "format-validation-error",
+      "name": "Format Validation Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// BUILD API QUERY PARAMETERS\n// Supports single, multi-location, and ref_no searches\n// ============================================\n\nconst mergedData = $('Merge Request with Context').first().json;\nconst lookup = $('Validate & Lookup IDs').first().json;\n\nconst params = {\n  page: parseInt(mergedData.page) || 1,\n  limit: parseInt(mergedData.limit) || 20,\n  ln: mergedData.language || 'en_US',\n};\n\n// Multi-location support\nconst search_mode = lookup.search_mode || 'single';\nconst location_ids = lookup.location_ids || [];\n\n// Reference number search (from lookup or mergedData)\nconst refNo = lookup.ref_no || mergedData.ref_no || '';\nif (refNo.trim()) params.ref_no = refNo.trim();\n\n// Handle single vs multi-location\nif (search_mode === 'multi' && location_ids.length > 0) {\n  params.location_ids = location_ids;\n  params.search_mode = 'multi';\n} else if (lookup.location_id) {\n  params.location_id = lookup.location_id;\n  params.search_mode = 'single';\n}\n\nif (lookup.type_id) params.type_id = lookup.type_id;\nif (mergedData.listing_type?.trim()) params.listing_type = mergedData.listing_type.trim();\n\nif (parseInt(mergedData.bedrooms_min) > 0) params.bedrooms_min = parseInt(mergedData.bedrooms_min);\nif (parseInt(mergedData.bedrooms_max) > 0) params.bedrooms_max = parseInt(mergedData.bedrooms_max);\nif (parseInt(mergedData.bathrooms_min) > 0) params.bathrooms_min = parseInt(mergedData.bathrooms_min);\nif (parseInt(mergedData.bathrooms_max) > 0) params.bathrooms_max = parseInt(mergedData.bathrooms_max);\nif (parseInt(mergedData.list_price_min) > 0) params.list_price_min = parseInt(mergedData.list_price_min);\nif (parseInt(mergedData.list_price_max) > 0) params.list_price_max = parseInt(mergedData.list_price_max);\nif (parseInt(mergedData.build_size_min) > 0) params.build_size_min = parseInt(mergedData.build_size_min);\nif (parseInt(mergedData.build_size_max) > 0) params.build_size_max = parseInt(mergedData.build_size_max);\nif (parseInt(mergedData.plot_size_min) > 0) params.plot_size_min = parseInt(mergedData.plot_size_min);\nif (parseInt(mergedData.plot_size_max) > 0) params.plot_size_max = parseInt(mergedData.plot_size_max);\n\nif (lookup.feature_ids?.trim()) params.features = lookup.feature_ids.trim();\nparams.order = mergedData.order || 'last_date_desc';\n\nreturn { json: params };"
+      },
+      "id": "build-query-params",
+      "name": "Build Query Parameters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// FETCH PROPERTIES - SUPPORTS MULTI-LOCATION\n// ============================================\n\nconst params = $input.first().json;\nconst mapsData = $('Load Client Maps').first().json;\nconst apiBaseUrl = mapsData.prop_api_base_url || '';\nconst authHeader = mapsData.prop_auth_header || '';\n\n// Build query string from params\nfunction buildQueryString(baseParams, locationId) {\n  const parts = [];\n  \n  parts.push('page=' + (baseParams.page || 1));\n  parts.push('limit=' + (baseParams.limit || 20));\n  parts.push('ln=' + encodeURIComponent(baseParams.ln || 'en_US'));\n  \n  if (locationId) parts.push('location_id=' + locationId);\n  if (baseParams.type_id) parts.push('type_id=' + baseParams.type_id);\n  if (baseParams.ref_no) parts.push('ref_no=' + encodeURIComponent(baseParams.ref_no));\n  if (baseParams.listing_type) parts.push('listing_type=' + encodeURIComponent(baseParams.listing_type));\n  if (baseParams.bedrooms_min) parts.push('bedrooms_min=' + baseParams.bedrooms_min);\n  if (baseParams.bedrooms_max) parts.push('bedrooms_max=' + baseParams.bedrooms_max);\n  if (baseParams.bathrooms_min) parts.push('bathrooms_min=' + baseParams.bathrooms_min);\n  if (baseParams.bathrooms_max) parts.push('bathrooms_max=' + baseParams.bathrooms_max);\n  if (baseParams.list_price_min) parts.push('list_price_min=' + baseParams.list_price_min);\n  if (baseParams.list_price_max) parts.push('list_price_max=' + baseParams.list_price_max);\n  if (baseParams.build_size_min) parts.push('build_size_min=' + baseParams.build_size_min);\n  if (baseParams.build_size_max) parts.push('build_size_max=' + baseParams.build_size_max);\n  if (baseParams.plot_size_min) parts.push('plot_size_min=' + baseParams.plot_size_min);\n  if (baseParams.plot_size_max) parts.push('plot_size_max=' + baseParams.plot_size_max);\n  if (baseParams.features) parts.push('features=' + encodeURIComponent(baseParams.features));\n  if (baseParams.order) parts.push('order=' + encodeURIComponent(baseParams.order));\n  \n  return parts.join('&');\n}\n\n// Determine search mode\nconst searchMode = params.search_mode || 'single';\nconst locationIds = params.location_ids || [];\n\n// For multi-location, we'll do sequential requests\nif (searchMode === 'multi' && locationIds.length > 0) {\n  // Store properties grouped by location\n  const propertiesByLocation = {};\n  let totalCount = 0;\n  const seenRefs = new Set();\n  \n  for (const locId of locationIds) {\n    propertiesByLocation[locId] = [];\n    const queryString = buildQueryString(params, locId);\n    const url = apiBaseUrl + 'v1/property?' + queryString;\n    \n    try {\n      const response = await this.helpers.httpRequest({\n        method: 'GET',\n        url: url,\n        headers: { 'access_token': authHeader },\n        json: true\n      });\n      \n      totalCount += (response.count || 0);\n      const properties = response.data || [];\n      for (const prop of properties) {\n        const ref = prop.ref_no || prop.id;\n        if (!seenRefs.has(ref)) {\n          seenRefs.add(ref);\n          // Tag the property with the search location ID\n          prop._search_location_id = locId;\n          propertiesByLocation[locId].push(prop);\n        }\n      }\n    } catch (e) {\n      // Continue with other locations if one fails\n    }\n  }\n  \n  // Combine all properties (keeping location order)\n  const allProperties = [];\n  for (const locId of locationIds) {\n    allProperties.push(...(propertiesByLocation[locId] || []));\n  }\n  \n  return {\n    json: {\n      data: allProperties,\n      count: allProperties.length,\n      total_from_apis: totalCount,\n      search_mode: 'multi',\n      locations_searched: locationIds.length,\n      properties_by_location: propertiesByLocation\n    }\n  };\n} else {\n  // Single location: standard request\n  const queryString = buildQueryString(params, params.location_id);\n  const url = apiBaseUrl + 'v1/property?' + queryString;\n  \n  const response = await this.helpers.httpRequest({\n    method: 'GET',\n    url: url,\n    headers: { 'access_token': authHeader },\n    json: true\n  });\n  \n  return { json: response };\n}"
+      },
+      "id": "fetch-properties",
+      "name": "Fetch Properties",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format property results - supports multi-location with grouped display\nconst response = $input.item.json;\nconst properties = response.data || [];\nconst mergedData = $('Merge Request with Context').first().json;\nconst webhookData = $('Property Search Webhook').first().json.body || {};\n\n// Check if this is a multi-location search\nconst searchMode = response.search_mode || 'single';\nconst locationNames = webhookData.location_names || [];\nconst locationIds = webhookData.location_ids || [];\n\nif (properties.length === 0) {\n  let filters = [];\n  if (mergedData.property_type) filters.push(`**Type:** ${mergedData.property_type}`);\n  if (mergedData.location_name) filters.push(`**Location:** ${mergedData.location_name}`);\n  if (locationNames.length > 1) filters.push(`**Locations:** ${locationNames.join(', ')}`);\n  if (mergedData.bedrooms_min > 0) filters.push(`**Bedrooms:** ${mergedData.bedrooms_min}+`);\n  if (mergedData.list_price_min > 0 && mergedData.list_price_max > 0) {\n    filters.push(`**Price:** €${mergedData.list_price_min.toLocaleString()} - €${mergedData.list_price_max.toLocaleString()}`);\n  } else if (mergedData.list_price_min > 0) {\n    filters.push(`**Price:** Above €${mergedData.list_price_min.toLocaleString()}`);\n  } else if (mergedData.list_price_max > 0) {\n    filters.push(`**Price:** Under €${mergedData.list_price_max.toLocaleString()}`);\n  }\n  if (mergedData.bathrooms_min > 0) filters.push(`**Bathrooms:** ${mergedData.bathrooms_min}+`);\n  \n  let noResultsMsg = `I couldn't find any properties matching your search criteria.`;\n  if (filters.length > 0) {\n    noResultsMsg += `\\n\\n**Applied filters:**\\n${filters.join('\\n')}`;\n    noResultsMsg += `\\n\\nTry adjusting your filters - for example, increase your budget or try a different location.\\n\\n💡 Type **\"reset\"** to clear all filters and start a fresh search.`;\n  }\n  \n  return {\n    json: {\n      result: noResultsMsg,\n      should_save_context: false,\n      session_id: mergedData.session_id,\n      location_name: mergedData.location_name,\n      property_type: mergedData.property_type,\n      list_price_min: mergedData.list_price_min,\n      list_price_max: mergedData.list_price_max,\n      bedrooms_min: mergedData.bedrooms_min,\n      bedrooms_max: mergedData.bedrooms_max,\n      bathrooms_min: mergedData.bathrooms_min,\n      bathrooms_max: mergedData.bathrooms_max,\n      features: mergedData.features\n    }\n  };\n}\n\n// Helper function to format a single property\nfunction formatProperty(p, index) {\n  const name = p.name || 'Property';\n  const locationName = p.location_id?.name || p.location_name || p.city || 'Unknown';\n  const beds = p.bedrooms || 0;\n  const baths = p.bathrooms || 0;\n  const buildSize = p.build_size || p.build_area || 0;\n  const plotSize = p.plot_size || p.plot_area || 0;\n  const price = p.list_price || 0;\n  const ref = p.ref_no || '';\n  const url = mergedData.PROP_DETAIL_URL ? `${mergedData.PROP_DETAIL_URL}${ref}` : '';\n\n  const sizeLine = buildSize || plotSize\n    ? `📐 ${buildSize ? buildSize + ' m² build' : ''}${buildSize && plotSize ? ' | ' : ''}${plotSize ? plotSize + ' m² plot' : ''}\\n`\n    : '';\n\n  return `**${name}**\\n🛏️ ${beds} beds | 🚿 ${baths} baths\\n${sizeLine}🔑 Ref: ${ref}\\n💰 €${price.toLocaleString()}\\n🔗 [View Property](${url})`;\n}\n\nconst total = response.count || properties.length;\nlet message = '';\n\n// Multi-location: group properties by location and show 3 from each\nif (searchMode === 'multi' && locationIds.length > 1) {\n  // Build a map of location_id to location_name\n  const locIdToName = {};\n  for (let i = 0; i < locationIds.length; i++) {\n    locIdToName[locationIds[i]] = locationNames[i] || `Location ${locationIds[i]}`;\n  }\n  \n  // Use pre-grouped data from Fetch Properties if available\n  const propertiesByLocation = response.properties_by_location || {};\n  \n  // If not available, group by _search_location_id tag\n  const grouped = {};\n  if (Object.keys(propertiesByLocation).length > 0) {\n    for (const locId of locationIds) {\n      grouped[locId] = propertiesByLocation[locId] || [];\n    }\n  } else {\n    // Fallback: group by _search_location_id\n    for (const locId of locationIds) {\n      grouped[locId] = [];\n    }\n    for (const prop of properties) {\n      const searchLocId = prop._search_location_id;\n      if (searchLocId && grouped[searchLocId]) {\n        grouped[searchLocId].push(prop);\n      }\n    }\n  }\n  \n  const maxPerLocation = 3;\n  const locationSections = [];\n  \n  for (const locId of locationIds) {\n    const locName = locIdToName[locId] || 'Unknown';\n    const locProps = grouped[locId] || [];\n    \n    if (locProps.length > 0) {\n      const items = locProps.slice(0, maxPerLocation);\n      const propList = items.map((p, i) => formatProperty(p, i)).join('\\n\\n');\n      locationSections.push(`**${locName.charAt(0).toUpperCase() + locName.slice(1)}**\\n${propList}`);\n    } else {\n      locationSections.push(`**${locName.charAt(0).toUpperCase() + locName.slice(1)}**\\nNo properties found in this location.`);\n    }\n  }\n  \n  const locNamesDisplay = locationNames.map(n => n.charAt(0).toUpperCase() + n.slice(1)).join(' and ');\n  message = `Here are some ${mergedData.property_type || 'properties'} in ${locNamesDisplay}:\\n\\n`;\n  message += locationSections.join('\\n\\n');\n  message += `\\n\\nLet me know if you'd like to see more options or refine your search!`;\n} else {\n  // Single location: original behavior\n  const maxToShow = 3;\n  const items = properties.slice(0, maxToShow);\n  const propertyList = items.map((p, i) => formatProperty(p, i)).join('\\n\\n');\n  \n  message = `I found ${total} properties matching your criteria`;\n  if (mergedData.property_type) message += ` for ${mergedData.property_type}`;\n  if (mergedData.location_name) message += ` in ${mergedData.location_name}`;\n  message += `. Here are the top ${items.length} featured properties:\\n\\n`;\n  message += propertyList;\n  if (total > maxToShow) {\n    message += `\\n\\nShowing ${maxToShow} of ${total} properties. Let me know if you'd like to see more or refine your search!`;\n  }\n}\n\nmessage += `\\n\\n💡 _Tip: Type **\"reset\"** anytime to clear filters and start fresh._`;\n\nreturn {\n  json: {\n    result: message,\n    should_save_context: true,\n    session_id: mergedData.session_id,\n    location_name: mergedData.location_name,\n    property_type: mergedData.property_type,\n    list_price_min: mergedData.list_price_min,\n    list_price_max: mergedData.list_price_max,\n    bedrooms_min: mergedData.bedrooms_min,\n    bedrooms_max: mergedData.bedrooms_max,\n    bathrooms_min: mergedData.bathrooms_min,\n    bathrooms_max: mergedData.bathrooms_max,\n    features: mergedData.features\n  }\n};"
+      },
+      "id": "format-results",
+      "name": "Format Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO search_context (\n  session_id, location_name, property_type, list_price_min, list_price_max,\n  bedrooms_min, bedrooms_max, bathrooms_min, bathrooms_max, features, updated_at\n)\nSELECT\n  '{{ $json.session_id }}', '{{ $json.location_name }}', '{{ $json.property_type }}',\n  {{ $json.list_price_min || 0 }}, {{ $json.list_price_max || 0 }},\n  {{ $json.bedrooms_min || 0 }}, {{ $json.bedrooms_max || 0 }},\n  {{ $json.bathrooms_min || 0 }}, {{ $json.bathrooms_max || 0 }},\n  '{{ $json.features || \"\" }}', NOW()\nWHERE '{{ $json.should_save_context }}' = 'true'\nON CONFLICT (session_id) DO UPDATE SET\n  location_name = EXCLUDED.location_name,\n  property_type = EXCLUDED.property_type,\n  list_price_min = EXCLUDED.list_price_min,\n  list_price_max = EXCLUDED.list_price_max,\n  bedrooms_min = EXCLUDED.bedrooms_min,\n  bedrooms_max = EXCLUDED.bedrooms_max,\n  bathrooms_min = EXCLUDED.bathrooms_min,\n  bathrooms_max = EXCLUDED.bathrooms_max,\n  features = EXCLUDED.features,\n  updated_at = NOW();",
+        "options": {}
+      },
+      "id": "save-search-context",
+      "name": "Save Search Context",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [960, 300],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare final response\nlet formatValidationError = null;\nlet formatEnhancedResults = null;\n\ntry { formatValidationError = $('Format Validation Error').first()?.json; } catch (e) {}\ntry { formatEnhancedResults = $('Format Results').first()?.json; } catch (e) {}\n\nif (formatValidationError && formatValidationError.result) {\n  return { json: { result: formatValidationError.result } };\n} else if (formatEnhancedResults && formatEnhancedResults.result) {\n  return { json: { result: formatEnhancedResults.result } };\n} else {\n  return { json: { result: \"An error occurred processing your request. Please try again.\" } };\n}"
+      },
+      "id": "prepare-response",
+      "name": "Prepare Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 200]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 2 * * *" }]
+        }
+      },
+      "id": "schedule-cache-refresh",
+      "name": "Schedule Trigger - Daily 2 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [-1200, 600]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT client_id, api_token, api_base_url FROM clients WHERE is_active = TRUE;",
+        "options": {}
+      },
+      "id": "get-active-clients",
+      "name": "Get Active Clients",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [-960, 600],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": { "options": {} },
+      "id": "loop-clients",
+      "name": "Loop Over Clients",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [-720, 600]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "client_id", "name": "client_id", "value": "={{ $json.client_id }}", "type": "string" },
+            { "id": "api_token", "name": "api_token", "value": "={{ $json.api_token }}", "type": "string" },
+            { "id": "api_base_url", "name": "api_base_url", "value": "={{ $json.api_base_url || 'https://crm.costacasas.com' }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-client-context",
+      "name": "Set Client Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [-480, 500]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.api_base_url }}v2/location",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "access_token", "value": "={{ $json.api_token }}" }] },
+        "options": {}
+      },
+      "id": "fetch-locations",
+      "name": "Fetch Locations",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-240, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Set Client Context').item.json.api_base_url }}v1/property_types",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "access_token", "value": "={{ $('Set Client Context').item.json.api_token }}" }] },
+        "options": {}
+      },
+      "id": "fetch-types",
+      "name": "Fetch Property Types",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-240, 560]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Set Client Context').item.json.api_base_url }}v1/property",
+        "sendQuery": true,
+        "queryParameters": { "parameters": [{ "name": "limit", "value": "1000" }, { "name": "page", "value": "1" }] },
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "access_token", "value": "={{ $('Set Client Context').item.json.api_token }}" }] },
+        "options": {}
+      },
+      "id": "fetch-properties-for-features",
+      "name": "Fetch Properties for Features",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-240, 720]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract unique features from properties\nconst response = $input.item.json;\nconst properties = response.data || [];\nconst featureMap = new Map();\n\nfor (const property of properties) {\n  const features = property.features || property.property_features || property.amenities || [];\n  if (Array.isArray(features)) {\n    for (const feature of features) {\n      if (typeof feature === 'object' && feature !== null) {\n        const id = feature.id || feature.feature_id;\n        const name = feature.name || feature.feature_name || feature.title;\n        if (id && name && !featureMap.has(String(name).trim())) {\n          featureMap.set(String(name).trim(), parseInt(id));\n        }\n      }\n    }\n  }\n}\n\nreturn { json: { data: Array.from(featureMap.entries()).map(([name, id]) => ({ id, name })), count: featureMap.size } };"
+      },
+      "id": "extract-features",
+      "name": "Extract Features",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [0, 720]
+    },
+    {
+      "parameters": { "mode": "combine", "combineBy": "combineByPosition", "numberInputs": 3, "options": {} },
+      "id": "merge-api-data",
+      "name": "Merge API Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [240, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build location, type, and feature maps\nconst locationsData = $('Fetch Locations').first().json;\nconst typesData = $('Fetch Property Types').first().json;\nconst featuresData = $('Extract Features').first().json;\nconst clientId = $('Set Client Context').first().json.client_id;\n\nconst locations = locationsData.data || locationsData.locations || (Array.isArray(locationsData) ? locationsData : []);\nconst types = typesData.data || typesData.types || (Array.isArray(typesData) ? typesData : []);\nconst features = featuresData.data || featuresData.features || (Array.isArray(featuresData) ? featuresData : []);\n\n// Build location map\nconst locationMap = {};\nfor (const loc of locations) {\n  const name = (loc.name || loc.location_name || '').toLowerCase().trim();\n  const id = loc.id || loc.location_id;\n  if (name && id) {\n    locationMap[name] = parseInt(id);\n    const cleanName = name.replace(/[^a-z0-9]/g, '');\n    if (cleanName !== name) locationMap[cleanName] = parseInt(id);\n  }\n}\n\n// Build type map (sorted by ID, lowest first)\nconst typeMap = {};\nconst sortedTypes = types.filter(t => t.name && t.id).sort((a, b) => parseInt(a.id) - parseInt(b.id));\nfor (const type of sortedTypes) {\n  const name = (type.name || type.type_name || '').toLowerCase().trim();\n  const id = type.id || type.type_id;\n  if (name && id) {\n    if (!typeMap[name]) typeMap[name] = parseInt(id);\n    if (!name.endsWith('s') && !typeMap[name + 's']) typeMap[name + 's'] = parseInt(id);\n    if (name.endsWith('s') && !typeMap[name.slice(0, -1)]) typeMap[name.slice(0, -1)] = parseInt(id);\n  }\n}\n\n// Build feature map\nconst featureMap = {};\nfor (const feature of features) {\n  const name = (feature.name || feature.feature_name || '').toLowerCase().trim();\n  const id = feature.id || feature.feature_id;\n  if (name && id) {\n    featureMap[name] = parseInt(id);\n    const cleanName = name.replace(/[^a-z0-9]/g, '');\n    if (cleanName !== name) featureMap[cleanName] = parseInt(id);\n    const underscoredName = name.replace(/\\s+/g, '_');\n    if (underscoredName !== name) featureMap[underscoredName] = parseInt(id);\n  }\n}\n\nreturn {\n  json: {\n    client_id: clientId,\n    location_map: locationMap,\n    type_map: typeMap,\n    feature_map: featureMap,\n    location_count: Object.keys(locationMap).length,\n    type_count: Object.keys(typeMap).length,\n    feature_count: Object.keys(featureMap).length,\n    updated_at: new Date().toISOString()\n  }\n};"
+      },
+      "id": "transform-to-maps",
+      "name": "Transform to Maps",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nconst locationMapJson = JSON.stringify(data.location_map).replace(/'/g, \"''\");\nconst typeMapJson = JSON.stringify(data.type_map).replace(/'/g, \"''\");\nconst featureMapJson = JSON.stringify(data.feature_map).replace(/'/g, \"''\");\n\nconst sql = `\nUPDATE client_variables\nSET variables = jsonb_set(\n  jsonb_set(\n    jsonb_set(variables, '{LOCATION_MAP}', '${locationMapJson}'::jsonb),\n    '{TYPE_MAP}', '${typeMapJson}'::jsonb\n  ),\n  '{FEATURE_MAP}', '${featureMapJson}'::jsonb\n)\nWHERE client_id = '${data.client_id}';\n\nUPDATE client_variables\nSET variables = jsonb_set(variables, '{CACHE_UPDATED_AT}', '\"${data.updated_at}\"'::jsonb)\nWHERE client_id = '${data.client_id}';\n\nSELECT '${data.client_id}' as client_id, ${data.location_count} as locations_cached,\n  ${data.type_count} as types_cached, ${data.feature_count} as features_cached, '${data.updated_at}' as cached_at;\n`;\n\nreturn { json: { sql, client_id: data.client_id, location_count: data.location_count, type_count: data.type_count, feature_count: data.feature_count, updated_at: data.updated_at } };"
+      },
+      "id": "prepare-sql-update",
+      "name": "Prepare SQL Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 560]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "{{ $json.sql }}",
+        "options": {}
+      },
+      "id": "update-client-variables",
+      "name": "Update Client Variables",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [960, 560],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+          "conditions": [{ "id": "has_more", "leftValue": "={{ $('Loop Over Clients').context.noItemsLeft }}", "rightValue": "", "operator": { "type": "boolean", "operation": "false", "singleValue": true } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "more-clients-check",
+      "name": "More Clients?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1200, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "const allResults = $input.all();\nconst summary = {\n  total_clients: allResults.length,\n  successful_updates: allResults.filter(r => r.json.client_id).length,\n  timestamp: new Date().toISOString(),\n  details: allResults.map(r => ({ client_id: r.json.client_id, locations_cached: r.json.locations_cached, types_cached: r.json.types_cached, features_cached: r.json.features_cached }))\n};\nconsole.log('=== CACHE UPDATE SUMMARY ===');\nconsole.log(`Total clients: ${summary.total_clients}, Successful: ${summary.successful_updates}`);\nreturn { json: summary };"
+      },
+      "id": "log-summary",
+      "name": "Log Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 700]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Property Search Webhook": {
+      "main": [[{ "node": "Load Search Context", "type": "main", "index": 0 }]]
+    },
+    "Load Search Context": {
+      "main": [[{ "node": "Merge Request with Context", "type": "main", "index": 0 }]]
+    },
+    "Merge Request with Context": {
+      "main": [[{ "node": "Save Early Context", "type": "main", "index": 0 }]]
+    },
+    "Save Early Context": {
+      "main": [[{ "node": "Load Client Maps", "type": "main", "index": 0 }]]
+    },
+    "Load Client Maps": {
+      "main": [[{ "node": "Validate & Lookup IDs", "type": "main", "index": 0 }]]
+    },
+    "Validate & Lookup IDs": {
+      "main": [[{ "node": "Check Validation", "type": "main", "index": 0 }]]
+    },
+    "Check Validation": {
+      "main": [
+        [{ "node": "Format Validation Error", "type": "main", "index": 0 }],
+        [{ "node": "Build Query Parameters", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Validation Error": {
+      "main": [[{ "node": "Prepare Response", "type": "main", "index": 0 }]]
+    },
+    "Build Query Parameters": {
+      "main": [[{ "node": "Fetch Properties", "type": "main", "index": 0 }]]
+    },
+    "Fetch Properties": {
+      "main": [[{ "node": "Format Results", "type": "main", "index": 0 }]]
+    },
+    "Format Results": {
+      "main": [[{ "node": "Save Search Context", "type": "main", "index": 0 }]]
+    },
+    "Save Search Context": {
+      "main": [[{ "node": "Prepare Response", "type": "main", "index": 0 }]]
+    },
+    "Schedule Trigger - Daily 2 AM": {
+      "main": [[{ "node": "Get Active Clients", "type": "main", "index": 0 }]]
+    },
+    "Get Active Clients": {
+      "main": [[{ "node": "Loop Over Clients", "type": "main", "index": 0 }]]
+    },
+    "Loop Over Clients": {
+      "main": [[], [{ "node": "Set Client Context", "type": "main", "index": 0 }]]
+    },
+    "Set Client Context": {
+      "main": [
+        [
+          { "node": "Fetch Locations", "type": "main", "index": 0 },
+          { "node": "Fetch Property Types", "type": "main", "index": 0 },
+          { "node": "Fetch Properties for Features", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Fetch Locations": {
+      "main": [[{ "node": "Merge API Data", "type": "main", "index": 0 }]]
+    },
+    "Fetch Property Types": {
+      "main": [[{ "node": "Merge API Data", "type": "main", "index": 1 }]]
+    },
+    "Fetch Properties for Features": {
+      "main": [[{ "node": "Extract Features", "type": "main", "index": 0 }]]
+    },
+    "Extract Features": {
+      "main": [[{ "node": "Merge API Data", "type": "main", "index": 2 }]]
+    },
+    "Merge API Data": {
+      "main": [[{ "node": "Transform to Maps", "type": "main", "index": 0 }]]
+    },
+    "Transform to Maps": {
+      "main": [[{ "node": "Prepare SQL Update", "type": "main", "index": 0 }]]
+    },
+    "Prepare SQL Update": {
+      "main": [[{ "node": "Update Client Variables", "type": "main", "index": 0 }]]
+    },
+    "Update Client Variables": {
+      "main": [[{ "node": "More Clients?", "type": "main", "index": 0 }]]
+    },
+    "More Clients?": {
+      "main": [
+        [{ "node": "Loop Over Clients", "type": "main", "index": 0 }],
+        [{ "node": "Log Summary", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "510dc0afdd5ec9c3843be833c714a2623974a2058ec95eb59daf867d1c4b0dcb"
+  },
+  "id": "",
+  "tags": []
+}

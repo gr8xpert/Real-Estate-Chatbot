@@ -1,0 +1,330 @@
+{
+  "name": "Admin & Utilities",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "add-client",
+        "authentication": "headerAuth",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-add-client",
+      "name": "Client Onboard Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-800, 100],
+      "webhookId": "client-onboard-webhook-id",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "kgRZEVEKfOpnzcfE",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Comprehensive validation and data preparation\nconst body = $input.item.json.body;\n\n// Required fields validation\nconst requiredFields = ['client_id', 'client_name', 'api_token', 'api_base_url'];\nconst missing = requiredFields.filter(field => !body[field]);\nif (missing.length > 0) {\n  throw new Error(`Missing required fields: ${missing.join(', ')}`);\n}\n\n// Client ID validation\nconst clientIdRegex = /^[a-z0-9_-]{3,50}$/;\nif (!clientIdRegex.test(body.client_id)) {\n  throw new Error('client_id must be lowercase alphanumeric (3-50 chars), can include _ and -');\n}\n\n// URL validation\nconst urlRegex = /^https?:\\/\\/.+/;\nif (!urlRegex.test(body.api_base_url)) {\n  throw new Error('api_base_url must be a valid URL starting with http:// or https://');\n}\n\n// Email validation (if provided)\nif (body.email) {\n  const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n  if (!emailRegex.test(body.email)) {\n    throw new Error('email must be a valid email address');\n  }\n}\n\n// Extract and validate variables\nconst variables = body.variables || {};\nconst hexColorRegex = /^#[0-9A-F]{6}$/i;\nconst primaryColor = variables.PRIMARY_COLOR || '#2563EB';\nconst secondaryColor = variables.SECONDARY_COLOR || '#1E40AF';\n\nif (!hexColorRegex.test(primaryColor)) {\n  throw new Error(`PRIMARY_COLOR must be a valid hex color, got: ${primaryColor}`);\n}\nif (!hexColorRegex.test(secondaryColor)) {\n  throw new Error(`SECONDARY_COLOR must be a valid hex color, got: ${secondaryColor}`);\n}\n\nconst ownerEmail = variables.OWNER_EMAIL || body.email || '';\nif (ownerEmail) {\n  const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n  if (!emailRegex.test(ownerEmail)) {\n    throw new Error('OWNER_EMAIL must be a valid email address');\n  }\n}\n\nconst ragWebsite = variables.RAG_WEBSITE || body.api_base_url || '';\nif (ragWebsite && !urlRegex.test(ragWebsite)) {\n  throw new Error('RAG_WEBSITE must be a valid URL');\n}\n\n// Validate features object\nif (variables.FEATURES) {\n  const validFeatures = ['property_search', 'rag', 'web_search', 'email_transcript', 'whatsapp'];\n  const providedFeatures = Object.keys(variables.FEATURES);\n  const invalidFeatures = providedFeatures.filter(f => !validFeatures.includes(f));\n  if (invalidFeatures.length > 0) {\n    throw new Error(`Invalid feature keys: ${invalidFeatures.join(', ')}`);\n  }\n  for (const [key, value] of Object.entries(variables.FEATURES)) {\n    if (typeof value !== 'boolean') {\n      throw new Error(`Feature ${key} must be a boolean, got: ${typeof value}`);\n    }\n  }\n}\n\n// Phone validation\nif (body.phone) {\n  const phoneRegex = /^[+\\d\\s()-]{7,20}$/;\n  if (!phoneRegex.test(body.phone)) {\n    throw new Error('phone must be a valid phone number (7-20 characters)');\n  }\n}\n\n// Status validation\nconst validStatuses = ['active', 'inactive', 'suspended'];\nconst status = body.status || 'active';\nif (!validStatuses.includes(status)) {\n  throw new Error(`status must be one of: ${validStatuses.join(', ')}`);\n}\n\nreturn {\n  json: {\n    client_id: body.client_id.toLowerCase().trim(),\n    client_name: body.client_name.trim(),\n    email: body.email ? body.email.toLowerCase().trim() : '',\n    phone: body.phone ? body.phone.trim() : '',\n    status: status,\n    api_token: body.api_token.trim(),\n    api_base_url: body.api_base_url.trim(),\n    bot_name: (variables.BOT_NAME || body.client_name).trim(),\n    primary_color: primaryColor.toUpperCase(),\n    secondary_color: secondaryColor.toUpperCase(),\n    owner_email: ownerEmail.toLowerCase().trim(),\n    rag_website: ragWebsite.trim(),\n    variables: variables,\n    validation_passed: true\n  }\n};"
+      },
+      "id": "validate-client-data",
+      "name": "Validate Client Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-560, 100]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO clients (\n  client_id, client_name, api_token, api_base_url, is_active, created_at\n)\nVALUES (\n  '{{ $json.client_id }}', '{{ $json.client_name }}', '{{ $json.api_token }}',\n  '{{ $json.api_base_url }}',\n  CASE WHEN '{{ $json.status }}' = 'active' THEN true ELSE false END,\n  NOW()\n)\nON CONFLICT (client_id) DO UPDATE SET\n  client_name = EXCLUDED.client_name,\n  api_token = EXCLUDED.api_token,\n  api_base_url = EXCLUDED.api_base_url,\n  is_active = EXCLUDED.is_active,\n  updated_at = NOW()\nRETURNING *;",
+        "options": {}
+      },
+      "id": "insert-client",
+      "name": "Insert Client to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-320, 100],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const validatedData = $('Validate Client Data').first().json;\nconst clientData = $('Insert Client to DB').first().json;\n\nconst variablesJson = {\n  BOT_NAME: validatedData.bot_name || clientData.client_name,\n  PRIMARY_COLOR: validatedData.primary_color || '#2563EB',\n  SECONDARY_COLOR: validatedData.secondary_color || '#1E40AF',\n  OWNER_EMAIL: validatedData.owner_email || '',\n  RAG_WEBSITE: validatedData.rag_website || clientData.api_base_url || '',\n  PROP_AUTH_HEADER: clientData.api_token,\n  PROP_API_BASE_URL: clientData.api_base_url,\n  FEATURES: {\n    property_search: validatedData.variables?.FEATURES?.property_search ?? true,\n    rag: validatedData.variables?.FEATURES?.rag ?? false,\n    web_search: validatedData.variables?.FEATURES?.web_search ?? false,\n    email_transcript: validatedData.variables?.FEATURES?.email_transcript ?? true,\n    whatsapp: validatedData.variables?.FEATURES?.whatsapp ?? false\n  },\n  TYPE_MAP: {},\n  LOCATION_MAP: {},\n  FEATURE_MAP: {},\n  CACHE_UPDATED_AT: null\n};\n\nreturn {\n  json: {\n    client_id: clientData.client_id,\n    variables_json: JSON.stringify(variablesJson)\n  }\n};"
+      },
+      "id": "prepare-variables",
+      "name": "Prepare Variables for DB",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-80, 100]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO client_variables (client_id, variables, updated_at)\nVALUES ($1, $2::jsonb, NOW())\nON CONFLICT (client_id) DO UPDATE SET\n  variables = $2::jsonb,\n  updated_at = NOW()\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ $json.client_id }},={{ $json.variables_json }}"
+        }
+      },
+      "id": "save-client-variables",
+      "name": "Save to client_variables",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [160, 100],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "success", "name": "success", "value": true, "type": "boolean" },
+            { "id": "message", "name": "message", "value": "Client added successfully", "type": "string" },
+            { "id": "client_id", "name": "client_id", "value": "={{ $('Save to client_variables').item.json.client_id }}", "type": "string" },
+            { "id": "variables", "name": "variables", "value": "={{ JSON.parse($('Save to client_variables').item.json.variables) }}", "type": "object" },
+            { "id": "next_steps", "name": "next_steps", "value": "1. Run cache update workflow. 2. Create ChatBot workflow. 3. Test the chatbot.", "type": "string" },
+            { "id": "timestamp", "name": "timestamp", "value": "={{ $now.toISO() }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "format-success-response",
+      "name": "Format Success Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [400, 100]
+    },
+    {
+      "parameters": {},
+      "id": "error-trigger-onboard",
+      "name": "On Error (Onboard)",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [-800, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const errorData = $input.item.json;\nlet errorMessage = 'Failed to add client';\nlet errorDetails = '';\n\nif (errorData.error?.message) {\n  errorMessage = errorData.error.message;\n  errorDetails = errorData.error.description || '';\n} else if (errorData.message) {\n  errorMessage = errorData.message;\n  errorDetails = errorData.description || errorData.stack || '';\n}\n\nreturn {\n  json: {\n    success: false,\n    error: errorMessage,\n    details: errorDetails,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "format-error-response",
+      "name": "Format Error Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-560, 300]
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [{ "name": "location" }]
+        }
+      },
+      "id": "weather-trigger",
+      "name": "Weather - When Executed",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-800, 500]
+    },
+    {
+      "parameters": {
+        "url": "=http://api.weatherapi.com/v1/current.json?key={{ $env.WEATHER_API_KEY || 'YOUR_API_KEY_HERE' }}&q={{ $json.location }}&aqi=no",
+        "options": {}
+      },
+      "id": "fetch-weather",
+      "name": "Fetch Weather Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [-560, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "const weatherData = $input.first().json;\n\nif (weatherData.error) {\n  return {\n    success: false,\n    message: `Weather data not available. ${weatherData.error.message}`\n  };\n}\n\nconst location = weatherData.location;\nconst current = weatherData.current;\n\nreturn {\n  success: true,\n  location: `${location.name}, ${location.region}, ${location.country}`,\n  temperature: { celsius: current.temp_c, fahrenheit: current.temp_f },\n  condition: current.condition.text,\n  humidity: current.humidity,\n  wind: { speed_kph: current.wind_kph, speed_mph: current.wind_mph, direction: current.wind_dir },\n  feels_like: { celsius: current.feelslike_c, fahrenheit: current.feelslike_f },\n  uv_index: current.uv,\n  last_updated: current.last_updated,\n  formatted_message: `Weather in ${location.name}, ${location.region}\\n\\nTemperature: ${current.temp_c}C (${current.temp_f}F)\\nCondition: ${current.condition.text}\\nFeels Like: ${current.feelslike_c}C (${current.feelslike_f}F)\\nHumidity: ${current.humidity}%\\nWind: ${current.wind_kph} km/h ${current.wind_dir}\\nUV Index: ${current.uv}\\n\\nLast updated: ${current.last_updated}`\n};"
+      },
+      "id": "format-weather",
+      "name": "Format Weather Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-320, 500]
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "sessionId" },
+            { "name": "owner_email" },
+            { "name": "user_email" },
+            { "name": "user_name" },
+            { "name": "client_id" },
+            { "name": "user_phone" }
+          ]
+        }
+      },
+      "id": "email-trigger",
+      "name": "Email - When Executed",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [-800, 700]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  id, session_id,\n  message->>'type' as role,\n  message->>'content' as message_text\nFROM n8n_chat_histories\nWHERE session_id = '{{ $json.sessionId }}'\nORDER BY id ASC;",
+        "options": {}
+      },
+      "id": "get-chat-history",
+      "name": "Get Chat History",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [-560, 700],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const workflowInput = $('Email - When Executed').first().json;\n\nconst contact = {\n  full_name: workflowInput.user_name,\n  email: workflowInput.user_email,\n  phone: workflowInput.user_phone || 'N/A',\n  session_id: workflowInput.sessionId,\n  client_id: workflowInput.client_id,\n  created_at: new Date().toISOString()\n};\n\nconst chatMessages = $input.all();\nlet transcript = '';\n\nif (chatMessages && chatMessages.length > 0) {\n  chatMessages.forEach((item) => {\n    const data = item.json;\n    const role = data.role || 'unknown';\n    const messageText = data.message_text || '';\n    const roleLabel = role === 'human' ? 'Customer' : 'Agent';\n    \n    if (messageText && !messageText.includes('STORE_USER_DATA') && !messageText.includes('CHAT_END_CONFIRMED')) {\n      transcript += `\\n${roleLabel}:\\n${messageText}\\n`;\n    }\n  });\n} else {\n  transcript = '\\n(No chat history found)\\n';\n}\n\nif (transcript.trim() === '') transcript = '\\n(No chat history found)\\n';\n\nconst emailHTML = `\n<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\">\n  <style>\n    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; }\n    .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 10px 10px 0 0; text-align: center; }\n    .header h1 { margin: 0; font-size: 28px; }\n    .content { background: white; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }\n    .info-box { background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #667eea; }\n    .info-box h3 { margin-top: 0; color: #667eea; }\n    .transcript { background: #f9f9f9; padding: 20px; border-radius: 8px; margin-top: 20px; white-space: pre-wrap; font-family: 'Courier New', monospace; font-size: 14px; border: 1px solid #e0e0e0; max-height: 600px; overflow-y: auto; }\n    .footer { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 2px solid #e0e0e0; color: #666; font-size: 12px; }\n  </style>\n</head>\n<body>\n  <div class=\"header\">\n    <h1>Chat Transcript</h1>\n    <p>Your conversation with ${contact.client_id || 'Realtysoft'}</p>\n  </div>\n  <div class=\"content\">\n    <div class=\"info-box\">\n      <h3>Contact Information</h3>\n      <p><strong>Name:</strong> ${contact.full_name || 'N/A'}</p>\n      <p><strong>Email:</strong> ${contact.email || 'N/A'}</p>\n      <p><strong>Phone:</strong> ${contact.phone || 'N/A'}</p>\n      <p><strong>Date:</strong> ${new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })}</p>\n    </div>\n    <h3>Conversation Transcript</h3>\n    <div class=\"transcript\">${transcript}</div>\n  </div>\n  <div class=\"footer\">\n    <p>This transcript was automatically generated by ${contact.client_id || 'Realtysoft'}.</p>\n  </div>\n</body>\n</html>\n`;\n\nconst emailText = `CHAT TRANSCRIPT\\n===============\\n\\nContact Information:\\n--------------------\\nName: ${contact.full_name || 'N/A'}\\nEmail: ${contact.email || 'N/A'}\\nPhone: ${contact.phone || 'N/A'}\\nDate: ${new Date().toLocaleDateString('en-GB')}\\n\\nConversation Transcript:\\n========================\\n${transcript}\\n\\n---\\nThis transcript was automatically generated.`;\n\nreturn {\n  to: contact.email,\n  to_name: contact.full_name,\n  subject: `Chat Transcript - ${contact.client_id || 'Realtysoft'} - ${new Date().toLocaleDateString('en-GB')}`,\n  html: emailHTML,\n  text: emailText,\n  session_id: contact.session_id,\n  client_id: contact.client_id\n};"
+      },
+      "id": "format-email",
+      "name": "Format Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-320, 700]
+    },
+    {
+      "parameters": {
+        "fromEmail": "noreply@realtysoft.eu",
+        "toEmail": "={{ $('Email - When Executed').first().json.user_email }}",
+        "subject": "={{ $json.subject }}",
+        "html": "={{ $json.html }}",
+        "options": {}
+      },
+      "id": "send-email",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [-80, 700],
+      "credentials": {
+        "smtp": {
+          "id": "D1HM87My9mPZk2nA",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE user_contact_details\nSET chat_ended = true, last_seen = CURRENT_TIMESTAMP\nWHERE session_id = '{{ $('Format Email').item.json.session_id }}';",
+        "options": {}
+      },
+      "id": "mark-chat-ended",
+      "name": "Mark Chat Ended",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [160, 700],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "error-trigger-email",
+      "name": "On Error (Email)",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [-800, 900]
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $input.first().json;\nconst workflowInput = $('Email - When Executed').first().json;\n\nreturn {\n  json: {\n    session_id: workflowInput.sessionId,\n    error_occurred: true,\n    error_message: error.message || 'Unknown error during email sending',\n    error_node: error.node?.name || 'Unknown node'\n  }\n};"
+      },
+      "id": "handle-email-error",
+      "name": "Handle Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-560, 900]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE user_contact_details\nSET chat_ended = true, last_seen = CURRENT_TIMESTAMP\nWHERE session_id = '{{ $json.session_id }}';",
+        "options": {}
+      },
+      "id": "mark-chat-ended-error",
+      "name": "Mark Chat Ended (Error)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [-320, 900],
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Client Onboard Webhook": {
+      "main": [[{ "node": "Validate Client Data", "type": "main", "index": 0 }]]
+    },
+    "Validate Client Data": {
+      "main": [[{ "node": "Insert Client to DB", "type": "main", "index": 0 }]]
+    },
+    "Insert Client to DB": {
+      "main": [[{ "node": "Prepare Variables for DB", "type": "main", "index": 0 }]]
+    },
+    "Prepare Variables for DB": {
+      "main": [[{ "node": "Save to client_variables", "type": "main", "index": 0 }]]
+    },
+    "Save to client_variables": {
+      "main": [[{ "node": "Format Success Response", "type": "main", "index": 0 }]]
+    },
+    "On Error (Onboard)": {
+      "main": [[{ "node": "Format Error Response", "type": "main", "index": 0 }]]
+    },
+    "Weather - When Executed": {
+      "main": [[{ "node": "Fetch Weather Data", "type": "main", "index": 0 }]]
+    },
+    "Fetch Weather Data": {
+      "main": [[{ "node": "Format Weather Response", "type": "main", "index": 0 }]]
+    },
+    "Email - When Executed": {
+      "main": [[{ "node": "Get Chat History", "type": "main", "index": 0 }]]
+    },
+    "Get Chat History": {
+      "main": [[{ "node": "Format Email", "type": "main", "index": 0 }]]
+    },
+    "Format Email": {
+      "main": [[{ "node": "Send Email", "type": "main", "index": 0 }]]
+    },
+    "Send Email": {
+      "main": [[{ "node": "Mark Chat Ended", "type": "main", "index": 0 }]]
+    },
+    "On Error (Email)": {
+      "main": [[{ "node": "Handle Error", "type": "main", "index": 0 }]]
+    },
+    "Handle Error": {
+      "main": [[{ "node": "Mark Chat Ended (Error)", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "510dc0afdd5ec9c3843be833c714a2623974a2058ec95eb59daf867d1c4b0dcb"
+  },
+  "id": "",
+  "tags": []
+}

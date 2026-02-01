@@ -1,0 +1,313 @@
+{
+  "name": "Realtysoft Email Transcript - GLOBAL MODULE",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  id,\n  session_id,\n  message->>'type' as role,\n  message->>'content' as message_text\nFROM n8n_chat_histories\nWHERE session_id = '{{ $json.sessionId }}'\nORDER BY id ASC;",
+        "options": {}
+      },
+      "name": "Get Chat History",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1024,
+        208
+      ],
+      "id": "68d089ee-6fe1-48a0-8875-d1133651876b",
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ============================================\n// FORMAT EMAIL TRANSCRIPT (Outlook/Gmail Compatible)\n// ============================================\n\n// Get contact from workflow input\nconst workflowInput = $('When Executed by Another Workflow').first().json;\n\nconst contact = {\n  full_name: workflowInput.user_name || 'Guest',\n  email: workflowInput.user_email,\n  phone: workflowInput.user_phone || 'N/A',\n  session_id: workflowInput.sessionId,\n  client_id: workflowInput.client_id,\n  created_at: new Date().toISOString()\n};\n\nconst chatMessages = $input.all();\n\n// Helper: escape HTML and convert newlines to <br>\nfunction escapeHtml(text) {\n  if (!text) return '';\n  return text\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/\\n/g, '<br>');\n}\n\n// Format messages as HTML table rows\nlet transcriptRows = '';\nif (chatMessages && chatMessages.length > 0) {\n  chatMessages.forEach((item) => {\n    const data = item.json;\n    const role = data.role || 'unknown';\n    const messageText = data.message_text || '';\n    \n    // Filter out system messages\n    if (messageText && \n        messageText.indexOf('STORE_USER_DATA') === -1 && \n        messageText.indexOf('CHAT_END_CONFIRMED') === -1) {\n      \n      const isCustomer = role === 'human';\n      const bgColor = isCustomer ? '#e3f2fd' : '#f5f5f5';\n      const borderColor = isCustomer ? '#2196f3' : '#9e9e9e';\n      const roleLabel = isCustomer ? '👤 Customer' : '🤖 Agent';\n      \n      transcriptRows += `\n        <tr>\n          <td style=\"padding: 12px 16px; background-color: ${bgColor}; border-left: 4px solid ${borderColor}; margin-bottom: 8px;\">\n            <div style=\"font-weight: bold; color: #333; margin-bottom: 6px; font-size: 13px;\">${roleLabel}</div>\n            <div style=\"color: #444; font-size: 14px; line-height: 1.5;\">${escapeHtml(messageText)}</div>\n          </td>\n        </tr>\n        <tr><td style=\"height: 8px;\"></td></tr>\n      `;\n    }\n  });\n}\n\nif (!transcriptRows) {\n  transcriptRows = '<tr><td style=\"padding: 20px; color: #666; font-style: italic;\">(No chat history found)</td></tr>';\n}\n\nconst dateStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });\nconst timeStr = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });\n\n// Build Outlook/Gmail compatible HTML using tables\nconst emailHTML = `\n<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\n<head>\n  <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n  <title>Chat Transcript</title>\n</head>\n<body style=\"margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; background-color: #f4f4f4;\">\n  <table border=\"0\" cellpadding=\"0\" cellspacing=\"0\" width=\"100%\" style=\"background-color: #f4f4f4;\">\n    <tr>\n      <td align=\"center\" style=\"padding: 20px 10px;\">\n        <table border=\"0\" cellpadding=\"0\" cellspacing=\"0\" width=\"600\" style=\"max-width: 600px; width: 100%;\">\n          \n          <!-- Header -->\n          <tr>\n            <td align=\"center\" style=\"background-color: #667eea; padding: 30px 20px; border-radius: 8px 8px 0 0;\">\n              <h1 style=\"margin: 0; color: #ffffff; font-size: 24px; font-weight: bold;\">📋 Chat Transcript</h1>\n              <p style=\"margin: 10px 0 0 0; color: #e8eaff; font-size: 14px;\">Your conversation with ${contact.client_id || 'Realtysoft'}</p>\n            </td>\n          </tr>\n          \n          <!-- Content -->\n          <tr>\n            <td style=\"background-color: #ffffff; padding: 30px 25px;\">\n              \n              <!-- Contact Info Box -->\n              <table border=\"0\" cellpadding=\"0\" cellspacing=\"0\" width=\"100%\" style=\"background-color: #f9f9f9; border-left: 4px solid #667eea; margin-bottom: 25px;\">\n                <tr>\n                  <td style=\"padding: 20px;\">\n                    <h3 style=\"margin: 0 0 15px 0; color: #667eea; font-size: 16px;\">👤 Contact Information</h3>\n                    <p style=\"margin: 6px 0; color: #333; font-size: 14px;\"><strong>Name:</strong> ${contact.full_name}</p>\n                    <p style=\"margin: 6px 0; color: #333; font-size: 14px;\"><strong>Email:</strong> ${contact.email || 'N/A'}</p>\n                    <p style=\"margin: 6px 0; color: #333; font-size: 14px;\"><strong>Phone:</strong> ${contact.phone}</p>\n                    <p style=\"margin: 6px 0; color: #333; font-size: 14px;\"><strong>Date:</strong> ${dateStr} at ${timeStr}</p>\n                  </td>\n                </tr>\n              </table>\n              \n              <!-- Transcript Section -->\n              <h3 style=\"margin: 0 0 15px 0; color: #333; font-size: 16px;\">💬 Conversation Transcript</h3>\n              <table border=\"0\" cellpadding=\"0\" cellspacing=\"0\" width=\"100%\" style=\"background-color: #fafafa; border: 1px solid #e0e0e0; border-radius: 4px;\">\n                ${transcriptRows}\n              </table>\n              \n            </td>\n          </tr>\n          \n          <!-- Footer -->\n          <tr>\n            <td align=\"center\" style=\"background-color: #f9f9f9; padding: 20px; border-top: 1px solid #e0e0e0; border-radius: 0 0 8px 8px;\">\n              <p style=\"margin: 0; color: #666; font-size: 12px;\">This transcript was automatically generated by ${contact.client_id || 'Realtysoft'}.</p>\n              <p style=\"margin: 5px 0 0 0; color: #666; font-size: 12px;\">If you have any questions, please contact us directly.</p>\n            </td>\n          </tr>\n          \n        </table>\n      </td>\n    </tr>\n  </table>\n</body>\n</html>\n`;\n\n// Plain text version\nlet transcriptText = '';\nif (chatMessages && chatMessages.length > 0) {\n  chatMessages.forEach((item) => {\n    const data = item.json;\n    const role = data.role || 'unknown';\n    const messageText = data.message_text || '';\n    if (messageText && messageText.indexOf('STORE_USER_DATA') === -1 && messageText.indexOf('CHAT_END_CONFIRMED') === -1) {\n      const roleLabel = role === 'human' ? 'Customer' : 'Agent';\n      transcriptText += `\\n${roleLabel}:\\n${messageText}\\n`;\n    }\n  });\n}\n\nconst emailText = `CHAT TRANSCRIPT\\n===============\\n\\nContact Information:\\n--------------------\\nName: ${contact.full_name}\\nEmail: ${contact.email || 'N/A'}\\nPhone: ${contact.phone}\\nDate: ${dateStr} at ${timeStr}\\n\\nConversation Transcript:\\n========================\\n${transcriptText || '(No chat history found)'}\\n\\n---\\nThis transcript was automatically generated by ${contact.client_id || 'Realtysoft'}.`;\n\nreturn {\n  to: contact.email,\n  to_name: contact.full_name,\n  subject: `Chat Transcript - ${contact.client_id || 'Realtysoft'} - ${new Date().toLocaleDateString('en-GB')}`,\n  html: emailHTML,\n  text: emailText,\n  session_id: contact.session_id,\n  client_id: contact.client_id,\n  owner_email: workflowInput.owner_email\n};"
+      },
+      "name": "Format Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        208
+      ],
+      "id": "40fbf591-913b-42d0-82f6-0789593aaf92"
+    },
+    {
+      "parameters": {
+        "fromEmail": "noreply@realtysoft.eu",
+        "toEmail": "={{ $('When Executed by Another Workflow').first().json.user_email }}",
+        "subject": "={{ $json.subject }}",
+        "html": "={{ $json.html }}",
+        "options": {}
+      },
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1472,
+        208
+      ],
+      "id": "e231b9d9-4325-41c6-a84b-0d01ae6a1fe8",
+      "webhookId": "bd1472b0-c922-4538-a841-1517f59d0e9a",
+      "credentials": {
+        "smtp": {
+          "id": "D1HM87My9mPZk2nA",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE user_contact_details\nSET \n  chat_ended = true,\n  last_seen = CURRENT_TIMESTAMP\nWHERE session_id = '{{ $('Format Email').item.json.session_id }}';",
+        "options": {}
+      },
+      "name": "Mark Chat Ended",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1696,
+        208
+      ],
+      "id": "1b283dff-3af6-4fd8-9ae9-69223abe657f",
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "sessionId"
+            },
+            {
+              "name": "owner_email"
+            },
+            {
+              "name": "user_email"
+            },
+            {
+              "name": "user_name"
+            },
+            {
+              "name": "client_id"
+            },
+            {
+              "name": "user_phone"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        800,
+        208
+      ],
+      "id": "c9e691e1-b1db-49ed-94aa-6af4064270d2",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        800,
+        432
+      ],
+      "id": "cd8e7887-c970-4f70-92ee-5058da47955d",
+      "name": "On Error"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log the error for debugging\nconst error = $input.first().json;\n\nconsole.log('=== EMAIL TRANSCRIPT ERROR ===');\nconsole.log('Error:', error);\n\n// Get the original workflow input data\nconst workflowInput = $('When Executed by Another Workflow').first().json;\n\n// Return session_id for marking chat as ended\nreturn {\n  json: {\n    session_id: workflowInput.sessionId,\n    error_occurred: true,\n    error_message: error.message || 'Unknown error during email sending',\n    error_node: error.node?.name || 'Unknown node'\n  }\n};"
+      },
+      "name": "Handle Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1024,
+        432
+      ],
+      "id": "bf2847c0-a014-424b-8d82-b6969250b7b5"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE user_contact_details\nSET \n  chat_ended = true,\n  last_seen = CURRENT_TIMESTAMP\nWHERE session_id = '{{ $json.session_id }}';",
+        "options": {}
+      },
+      "name": "Mark Chat Ended (Error Path)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1248,
+        432
+      ],
+      "id": "7fa3c05b-5b3d-4817-8d12-bd6e7a4eaf89",
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      },
+      "notes": "Ensures chat is marked as ended even if email fails"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO email_transcript_logs (session_id, client_id, status, error_message, created_at)\nVALUES (\n  '{{ $json.session_id }}',\n  '{{ $json.client_id }}',\n  'failed',\n  '{{ $json.error_message }}',\n  NOW()\n);",
+        "options": {
+          "queryReplacement": ""
+        }
+      },
+      "name": "Log Email Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1472,
+        432
+      ],
+      "id": "1c06b9de-6620-47cc-b5bf-ab822ba82251",
+      "credentials": {
+        "postgres": {
+          "id": "ZtheIuGFU5df42TW",
+          "name": "Postgres account"
+        }
+      },
+      "notes": "Optional: Logs email failures to database for monitoring"
+    },
+    {
+      "parameters": {
+        "fromEmail": "noreply@realtysoft.eu",
+        "toEmail": "={{ $('When Executed by Another Workflow').first().json.owner_email }}",
+        "subject": "={{ $('Format Email').item.json.subject }} - Copy",
+        "html": "={{ $('Format Email').item.json.html }}",
+        "options": {}
+      },
+      "name": "Send Email to Owner",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1472,
+        0
+      ],
+      "id": "send-email-owner-node",
+      "credentials": {
+        "smtp": {
+          "id": "D1HM87My9mPZk2nA",
+          "name": "SMTP account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Get Chat History": {
+      "main": [
+        [
+          {
+            "node": "Format Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Email": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email": {
+      "main": [
+        [
+          {
+            "node": "Send Email to Owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Get Chat History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "On Error": {
+      "main": [
+        [
+          {
+            "node": "Handle Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Error": {
+      "main": [
+        [
+          {
+            "node": "Mark Chat Ended (Error Path)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Chat Ended (Error Path)": {
+      "main": [
+        [
+          {
+            "node": "Log Email Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email to Owner": {
+      "main": [
+        [
+          {
+            "node": "Mark Chat Ended",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "f6948b22-e1d6-4cb7-a840-8b7ece4009fb",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "510dc0afdd5ec9c3843be833c714a2623974a2058ec95eb59daf867d1c4b0dcb"
+  },
+  "id": "CPFplUVPFDKLMdQn",
+  "tags": []
+}
